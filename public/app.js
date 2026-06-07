@@ -1069,7 +1069,41 @@ document.getElementById("reportOverlay").onclick=(e)=>{ if(e.target.id==="report
 document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeShare(); closeReport(); } });
 
 /* ---------------- Go ---------------- */
+/* ---------------- Social login ---------------- */
+async function renderSocialButtons(){
+  const box=document.getElementById("authSocial");
+  const divider=document.getElementById("authDivider");
+  box.innerHTML="";
+  let provs={};
+  try{ provs=await api("/auth/oauth/providers"); }catch(_){ divider.style.display="none"; return; }
+  const defs=[
+    {id:"google", label:"Google でログイン"},
+    {id:"github", label:"GitHub でログイン"},
+  ];
+  let any=false;
+  defs.forEach(d=>{
+    if(!provs[d.id]) return;
+    any=true;
+    box.appendChild(el("button",{class:"auth-social-btn "+d.id, text:d.label,
+      onClick:()=>{ location.href="/api/auth/oauth/"+d.id; }}));
+  });
+  divider.style.display = any ? "" : "none";
+}
+
+/* Surface an OAuth callback error (?oauth_error=...) on the login screen. */
+function showOAuthError(){
+  const oerr=new URLSearchParams(location.search).get("oauth_error");
+  if(!oerr) return;
+  const msg = oerr==="state" ? "セッションが無効です。もう一度お試しください。"
+            : oerr==="unsupported" ? "未対応のログイン方法です。"
+            : "ソーシャルログインに失敗しました。";
+  document.getElementById("authError").textContent=msg;
+  history.replaceState({}, "", location.pathname);
+}
+
 async function init(){
+  showOAuthError();
+  renderSocialButtons();
   try{
     const me=await api("/auth/me");      // existing session?
     currentUserEmail=me.email;

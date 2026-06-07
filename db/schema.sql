@@ -17,6 +17,16 @@ alter table users add column if not exists handle text unique;
 alter table users add column if not exists notifications jsonb not null default '{}'::jsonb;
 alter table users alter column password_hash drop not null;
 
+-- Social-login identities linked to a user (Google / GitHub). One user can have several.
+create table if not exists oauth_accounts (
+  provider         text not null,                         -- 'google' | 'github'
+  provider_user_id text not null,                         -- stable id from the provider
+  user_id          uuid references users(id) on delete cascade,
+  created_at       timestamptz not null default now(),
+  primary key (provider, provider_user_id)
+);
+create index if not exists oauth_accounts_user_idx on oauth_accounts(user_id);
+
 -- v1 storage, kept only as a migration source (superseded by workspace_data below)
 create table if not exists app_state (
   user_id    uuid primary key references users(id) on delete cascade,

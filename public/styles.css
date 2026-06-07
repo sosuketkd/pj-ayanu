@@ -302,3 +302,16 @@
   .auth-submit:hover{background:#2f6fd6;}
   .auth-submit:disabled{opacity:.6; cursor:default;}
   .auth-error{color:#d33; font-size:12px; min-height:16px; margin-top:10px; text-align:center;}
+  /* social login */
+  .auth-divider{display:flex; align-items:center; gap:10px; margin:16px 0 12px; color:var(--muted); font-size:11px;}
+  .auth-divider::before, .auth-divider::after{content:""; flex:1; height:1px; background:var(--line);}
+  .auth-social{display:flex; flex-direction:column; gap:8px;}
+  .auth-social-btn{
+    display:flex; align-items:center; justify-content:center; gap:8px;
+    width:100%; padding:10px 12px; border-radius:10px; font-size:13px; font-weight:700;
+    cursor:pointer; border:1px solid var(--line); background:#fff; color:var(--ink); font-family:inherit;
+  }
+  .auth-social-btn:hover{background:#f7f8fa;}
+  .auth-social-btn.google::before{content:"G"; font-weight:900; color:#4285f4;}
+  .auth-social-btn.github{background:#1f2328; color:#fff; border-color:#1f2328;}
+  .auth-social-btn.github:hover{background:#32383f;}

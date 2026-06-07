@@ -37,6 +37,21 @@ cp .env.example .env        # DATABASE_URL と JWT_SECRET を記入
 3. これで `notify@ayanu.sixma.jp` から招待メールが送信されます。
    （ドメイン未認証だと送信は失敗し、自動的にリンク表示へフォールバックします）
 
+### ソーシャルログイン（Google / GitHub）のセットアップ
+
+ログイン画面のボタンは、対応プロバイダの **Client ID と Secret が両方設定されているときだけ**表示されます。
+
+1. **Google**: [Google Cloud Console](https://console.cloud.google.com/) →「APIとサービス」→「認証情報」→ OAuth クライアント ID（ウェブアプリ）を作成。
+2. **GitHub**: Settings → Developer settings → **OAuth Apps** → New OAuth App を作成。
+3. 各プロバイダに **リダイレクト URI** を登録（本番とローカルの両方）:
+   - `https://ayanu.sixma.jp/api/auth/oauth/google/callback` / `.../github/callback`
+   - `http://localhost:3000/api/auth/oauth/google/callback` / `.../github/callback`
+4. 発行された ID/Secret を `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` に設定（ローカルは `.env`、本番は Vercel の環境変数）。
+5. 本番では `APP_URL`（例 `https://ayanu.sixma.jp`）を設定し、リダイレクト URI と一致させること。
+
+> 同じメールアドレスの既存アカウントがあれば自動で紐付き、なければ新規作成されます（パスワード未設定）。
+> Cookie は `Secure` 属性付きのため、動作確認は **HTTPS（本番）** で行ってください。
+
 ### DB のテーブルを作成
 
 ```bash
@@ -81,6 +96,7 @@ vercel --prod
 ## データ構造
 
 - `users` … アカウント（メール / 表示名 `username` / 公開ユーザーID `handle`〔設定後不変〕 / 通知設定 `notifications`）
+- `oauth_accounts` … ソーシャルログインのアイデンティティ（`provider` + `provider_user_id` → `user_id`）
 - `workspaces` … 共有可能なコンテナ（個人/チーム、招待リンク token を保持）
 - `workspace_members` … 誰がどのワークスペースに、どのロールで所属するか
 - `workspace_data` … そのワークスペースの日報＋AfterCheck（JSONB）
@@ -97,6 +113,9 @@ vercel --prod
 | POST | `/api/auth/signup` / `login` / `logout` | 認証 |
 | GET  | `/api/auth/me` | ログイン中ユーザー |
 | GET/PATCH | `/api/account` | アカウント設定（メール / 表示名 / ユーザーID / 通知設定）の取得・更新 |
+| GET | `/api/auth/oauth/providers` | 利用可能なソーシャルログイン（`{google, github}`） |
+| GET | `/api/auth/oauth/:provider` | プロバイダの認可画面へリダイレクト |
+| GET | `/api/auth/oauth/:provider/callback` | コールバック（コード交換→ログイン→`/` へ） |
 | GET  | `/api/workspaces` | 自分のワークスペース一覧＋保留中の招待 |
 | POST | `/api/workspaces` | 作成（`{name, kind}`、作成者がオーナー） |
 | GET/PATCH/DELETE | `/api/workspaces/:id` | 詳細（メンバー等）/ 改名 / 削除 |
