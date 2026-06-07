@@ -67,6 +67,48 @@
     padding:10px; cursor:pointer; font-size:13px; color:var(--accent);
   }
   .ws-add:hover{background:#eef4ff;}
+  .ws-group-head{font-size:10px; color:var(--muted); font-weight:700; padding:10px 8px 4px; letter-spacing:.04em;}
+  .ws-role{
+    font-size:10px; color:var(--muted); background:#f0f2f5; border-radius:5px; padding:1px 6px; flex:none;
+  }
+  .ws-menu li.active .ws-role{background:#dbe7ff; color:var(--accent);}
+  .ws-members{font-size:10px; color:var(--muted); flex:none;}
+  .ws-invite{background:#fffbeb; border:1px solid #fde9b8;}
+  .mini-btn{
+    border:1px solid var(--line); background:#fff; border-radius:6px; padding:4px 8px; font-size:11px;
+    cursor:pointer; color:var(--ink); flex:none;
+  }
+  .mini-btn:hover{background:#f0f2f5;}
+  .mini-btn.primary{background:var(--accent); color:#fff; border-color:var(--accent);}
+  .mini-btn.primary:hover{background:#2f6fd6;}
+  .mini-btn.danger{color:#d33; border-color:#f3c2c2;}
+  .mini-btn.danger:hover{background:#fdeaea;}
+  .mini-btn.block{width:100%; margin-top:10px; padding:9px;}
+
+  /* ---- Share / members modal ---- */
+  .share-overlay{
+    position:fixed; inset:0; background:rgba(20,30,50,.34); z-index:70;
+    display:none; align-items:flex-start; justify-content:center; padding:48px 16px; overflow:auto;
+  }
+  .share-overlay.open{display:flex;}
+  .share-card{
+    width:100%; max-width:440px; background:#fff; border-radius:14px; box-shadow:0 12px 40px rgba(20,30,50,.2);
+    padding:18px 18px 22px;
+  }
+  .share-head{display:flex; align-items:center; gap:10px; margin-bottom:6px;}
+  .share-head strong{font-size:16px;}
+  .share-head .icon-btn{margin-left:auto;}
+  .share-section-title{font-size:12px; font-weight:700; color:var(--ink); margin:16px 0 8px; padding-top:10px; border-top:1px solid var(--line);}
+  .share-sub{font-size:11px; color:var(--muted); margin:6px 2px;}
+  .share-row{display:flex; gap:6px; align-items:center; margin:6px 0;}
+  .share-input{
+    flex:1; min-width:0; border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:13px; font-family:inherit;
+  }
+  .share-input:focus{outline:none; border-color:var(--accent);}
+  .role-select{border:1px solid var(--line); border-radius:8px; padding:7px 6px; font-size:12px; background:#fff; flex:none;}
+  .member-row{display:flex; align-items:center; gap:8px; padding:6px 2px;}
+  .member-email{flex:1; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
+  .share-hr{border:none; border-top:1px solid var(--line); margin:16px 0 4px;}
 
   /* ---- Month calendar ---- */
   .cal{padding:10px 10px 4px;}
@@ -256,8 +298,14 @@
     <div class="ws-drawer-body">
       <ul id="wsList"></ul>
       <button class="ws-add" id="addWs">＋ 新規ワークスペース</button>
+      <button class="ws-add" id="shareWsBtn">⚙ 共有・メンバー設定</button>
     </div>
   </aside>
+
+  <!-- Share / members modal -->
+  <div class="share-overlay" id="shareOverlay">
+    <div class="share-card" id="shareCard"></div>
+  </div>
   <div class="ticket-nav">
     <button id="prevDay" title="前の日">‹</button>
     <input type="date" id="datePicker">
@@ -341,36 +389,26 @@
 "use strict";
 
 /* ---------------- State ---------------- */
-const CACHE_KEY = "ayanu.cache.v1";   // offline mirror of the server state
-let store = emptyStore();
+const CACHE_KEY = "ayanu.cache.v2";   // offline mirror, keyed by workspace id
 let currentDate = todayStr();
 let calYM = currentDate.slice(0,7);   // "YYYY-MM" month shown in the calendar
 let currentUserEmail = null;
 
-function emptyStore(){
-  return { workspaces:{ ws1:{name:"デフォルト", tickets:{}, ac:[]} }, currentWs:"ws1" };
+let wsList = [];          // workspace metadata: [{id,name,kind,role,member_count}]
+let pendingInvites = [];  // email invites awaiting me: [{token,role,workspace_name}]
+let currentWsId = null;   // selected workspace
+let data = emptyData();   // content of the current workspace: {tickets, ac}
+let pendingSelectWs = null; // workspace to open after processing an invite/join link
+
+function emptyData(){ return { tickets:{}, ac:[] }; }
+function normalizeData(d){
+  if(!d || typeof d!=="object") d={};
+  if(!d.tickets || typeof d.tickets!=="object") d.tickets={};
+  if(!Array.isArray(d.ac)) d.ac=[];
+  return d;
 }
 
-/* Ensure a loaded store has the expected shape (also migrates legacy data). */
-function normalizeStore(s){
-  if(!s || typeof s!=="object") s={};
-  if(!s.workspaces || !Object.keys(s.workspaces).length){
-    s = { workspaces:{ ws1:{name:"デフォルト", tickets:(s.tickets||{}), ac:[]} }, currentWs:"ws1" };
-  }
-  if(!s.currentWs || !s.workspaces[s.currentWs]) s.currentWs=Object.keys(s.workspaces)[0];
-  Object.values(s.workspaces).forEach(w=>{
-    if(!w.tickets) w.tickets={};
-    // AfterCheck is one shared list per workspace; migrate any old per-day todos once.
-    if(!Array.isArray(w.ac)){
-      const merged=[];
-      Object.keys(w.tickets).sort().forEach(d=>{ (w.tickets[d].todos||[]).forEach(td=>merged.push(td)); });
-      w.ac=merged;
-    }
-  });
-  return s;
-}
-
-/* ---- API + persistence ---- */
+/* ---- API ---- */
 async function api(path, opts={}){
   const res = await fetch("/api"+path, {
     method: opts.method || "GET",
@@ -378,40 +416,44 @@ async function api(path, opts={}){
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     credentials: "include",
   });
-  let data=null; try{ data=await res.json(); }catch(_){}
-  if(!res.ok) throw new Error((data && data.error) || ("HTTP "+res.status));
-  return data;
+  let body=null; try{ body=await res.json(); }catch(_){}
+  if(!res.ok) throw new Error((body && body.error) || ("HTTP "+res.status));
+  return body;
 }
 
-let saveTimer=null, saving=false, dirty=false;
+/* ---- persistence (per workspace, debounced) ---- */
+let saveTimer=null, dirty=false;
 function setSyncStatus(s){
   const el=document.getElementById("syncStatus");
   if(el) el.textContent = s==="saving"?"保存中…" : s==="saved"?"保存済み" : s==="error"?"保存失敗" : "";
 }
-/* Called by the app on every change: cache locally + debounce a server sync. */
+/* Called by the app on every change. */
 function save(){
-  try{ localStorage.setItem(CACHE_KEY, JSON.stringify(store)); }catch(_){}
-  if(!currentUserEmail) return;          // not logged in yet (e.g. initial render)
-  dirty=true;
+  if(!currentWsId) return;
+  try{ localStorage.setItem(CACHE_KEY+":"+currentWsId, JSON.stringify(data)); }catch(_){}
+  if(!currentUserEmail) return;
+  dirty=true; setSyncStatus("saving");
   clearTimeout(saveTimer);
-  saveTimer=setTimeout(syncToServer, 600);
+  saveTimer=setTimeout(()=>persist(currentWsId), 600);
 }
-async function syncToServer(){
-  if(saving || !currentUserEmail) return;
-  saving=true; dirty=false; setSyncStatus("saving");
-  try{ await api("/state", {method:"PUT", body:{data:store}}); setSyncStatus("saved"); }
-  catch(_){ setSyncStatus("error"); dirty=true; }
-  finally{
-    saving=false;
-    if(dirty){ clearTimeout(saveTimer); saveTimer=setTimeout(syncToServer, 600); }
-  }
+async function persist(wsId){
+  if(!dirty) return;
+  dirty=false;
+  try{ await api("/workspaces/"+wsId+"/data", {method:"PUT", body:{data}}); setSyncStatus("saved"); }
+  catch(_){ dirty=true; setSyncStatus("error"); }
+}
+/* Flush any pending change before switching workspace (so it saves to the right one). */
+async function flushSave(){
+  clearTimeout(saveTimer);
+  if(dirty && currentUserEmail && currentWsId) await persist(currentWsId);
 }
 
-/** The currently selected workspace object. */
-function ws(){ return store.workspaces[store.currentWs]; }
-
+/** Current workspace's content object {tickets, ac}. */
+function ws(){ return data; }
+/** Metadata of the current workspace (name, role, kind). */
+function curWs(){ return wsList.find(w=>w.id===currentWsId) || null; }
 /** The shared AfterCheck list for the current workspace. */
-function acList(){ const w=ws(); if(!Array.isArray(w.ac)) w.ac=[]; return w.ac; }
+function acList(){ if(!Array.isArray(data.ac)) data.ac=[]; return data.ac; }
 
 function isoOf(d){
   const off = d.getTimezoneOffset();
@@ -422,9 +464,8 @@ function uid(){ return Math.random().toString(36).slice(2,9)+Date.now().toString
 
 /** Get (creating if needed) the ticket for the current date in the current workspace. */
 function ticket(){
-  const t=ws().tickets;
-  if(!t[currentDate]) t[currentDate] = {tasks:[], todos:[]};
-  return t[currentDate];
+  if(!data.tickets[currentDate]) data.tickets[currentDate] = {tasks:[], todos:[]};
+  return data.tickets[currentDate];
 }
 
 /* ---------------- Task helpers ---------------- */
@@ -560,50 +601,242 @@ function renderCalendar(){
 }
 
 /* ---------------- Workspaces ---------------- */
+function roleLabel(r){ return r==="owner"?"オーナー" : r==="admin"?"管理者" : "メンバー"; }
+
+/* Tiny DOM builder. el('div',{class:'x',onClick:fn,text:'hi'}, child1, child2) */
+function el(tag, props={}, ...kids){
+  const e=document.createElement(tag);
+  for(const [k,v] of Object.entries(props)){
+    if(v==null) continue;
+    if(k==="class") e.className=v;
+    else if(k==="text") e.textContent=v;
+    else if(k.slice(0,2)==="on") e[k.toLowerCase()]=v;
+    else if(k==="value") e.value=v;
+    else e.setAttribute(k,v);
+  }
+  kids.flat().forEach(k=>{ if(k!=null) e.appendChild(typeof k==="string"?document.createTextNode(k):k); });
+  return e;
+}
+
 function renderWorkspaces(){
-  document.getElementById("wsCurrent").textContent = ws().name;
+  const cur=curWs();
+  document.getElementById("wsCurrent").textContent = cur ? cur.name : "—";
   const list=document.getElementById("wsList");
   list.innerHTML="";
-  Object.keys(store.workspaces).forEach(id=>{
-    const w=store.workspaces[id];
-    const li=document.createElement("li");
-    if(id===store.currentWs) li.className="active";
-    const dot=document.createElement("span"); dot.className="ws-dot"; li.appendChild(dot);
-    const name=document.createElement("span");
-    name.className="ws-li-name"; name.textContent=w.name;
-    name.onclick=()=>{ store.currentWs=id; closeDrawer(); render(); };
-    li.appendChild(name);
-    // rename
-    const ren=document.createElement("button");
-    ren.className="icon-btn"; ren.textContent="✎"; ren.title="名前を変更";
-    ren.onclick=(e)=>{ e.stopPropagation();
-      const n=prompt("ワークスペース名", w.name); if(n && n.trim()){ w.name=n.trim(); render(); } };
-    li.appendChild(ren);
-    // delete (not allowed if it's the only one)
-    const del=document.createElement("button");
-    del.className="icon-btn"; del.textContent="🗑"; del.title="削除";
-    del.onclick=(e)=>{ e.stopPropagation();
-      if(Object.keys(store.workspaces).length<=1){ alert("最後のワークスペースは削除できません。"); return; }
-      if(!confirm("「"+w.name+"」を削除しますか？（この中のすべての日報が消えます）")) return;
-      delete store.workspaces[id];
-      if(store.currentWs===id) store.currentWs=Object.keys(store.workspaces)[0];
-      render();
-    };
-    li.appendChild(del);
-    list.appendChild(li);
+
+  // pending invitations
+  if(pendingInvites.length){
+    list.appendChild(el("div",{class:"ws-group-head"},"招待"));
+    pendingInvites.forEach(inv=>{
+      list.appendChild(el("li",{class:"ws-invite"},
+        el("span",{class:"ws-li-name", text:"『"+inv.workspace_name+"』"}),
+        el("button",{class:"mini-btn primary", text:"参加", onClick:async()=>{
+          try{ const r=await api("/invites/"+inv.token+"/accept",{method:"POST"});
+            await refreshWorkspaces(); await selectWorkspace(r.workspaceId);
+          }catch(e){ alert(e.message); } }}),
+        el("button",{class:"mini-btn", text:"拒否", onClick:async()=>{
+          try{ await api("/invites/"+inv.token+"/decline",{method:"POST"}); await refreshWorkspaces(); }
+          catch(e){ alert(e.message); } }})
+      ));
+    });
+  }
+
+  [["personal","個人"],["team","チーム"]].forEach(([kind,label])=>{
+    const items=wsList.filter(w=>w.kind===kind);
+    if(!items.length) return;
+    list.appendChild(el("div",{class:"ws-group-head"},label));
+    items.forEach(w=>{
+      const name=el("span",{class:"ws-li-name", text:w.name, onClick:()=>selectWorkspace(w.id)});
+      list.appendChild(el("li",{class:(w.id===currentWsId?"active":"")},
+        el("span",{class:"ws-dot"}),
+        name,
+        el("span",{class:"ws-role", text:roleLabel(w.role)}),
+        w.member_count>1 ? el("span",{class:"ws-members", title:"メンバー数", text:"👤"+w.member_count}) : null
+      ));
+    });
   });
 }
 
-document.getElementById("addWs").onclick=()=>{
-  const n=prompt("新しいワークスペース名", "新規ワークスペース");
-  if(!n || !n.trim()) return;
-  const id=uid();
-  store.workspaces[id]={name:n.trim(), tickets:{}, ac:[]};
-  store.currentWs=id;
-  currentDate=todayStr(); calYM=currentDate.slice(0,7);
+/* reload workspace list + invites and refresh the drawer */
+async function refreshWorkspaces(){
+  try{ const r=await api("/workspaces"); wsList=r.workspaces||[]; pendingInvites=r.invites||[]; }catch(_){}
+  renderWorkspaces();
+}
+
+/* switch the active workspace */
+async function selectWorkspace(id){
+  if(id===currentWsId){ closeDrawer(); return; }
+  await flushSave();
+  currentWsId=id;
+  try{ localStorage.setItem("ayanu.lastWs", id); }catch(_){}
+  await loadWorkspaceData();
   closeDrawer();
+  currentDate=todayStr(); calYM=currentDate.slice(0,7);
+  render(); setSyncStatus("saved");
+}
+
+async function loadWorkspaceData(){
+  try{ const r=await api("/workspaces/"+currentWsId+"/data"); data=normalizeData(r.data); }
+  catch(_){
+    let cached=null; try{ cached=JSON.parse(localStorage.getItem(CACHE_KEY+":"+currentWsId)); }catch(__){}
+    data=normalizeData(cached);
+  }
+}
+
+/* create a new workspace */
+async function createWorkspace(){
+  const name=prompt("ワークスペース名"); if(!name || !name.trim()) return;
+  const kind=confirm("チーム用（共有を前提）にしますか？\n\nOK＝チーム　/　キャンセル＝個人") ? "team" : "personal";
+  try{
+    const w=await api("/workspaces",{method:"POST",body:{name:name.trim(), kind}});
+    await refreshWorkspaces();
+    await selectWorkspace(w.id);
+  }catch(e){ alert(e.message); }
+}
+document.getElementById("addWs").onclick=createWorkspace;
+document.getElementById("shareWsBtn").onclick=openShare;
+
+/* pick a workspace after leaving/deleting one (create a default if none left) */
+async function repickWorkspace(){
+  await refreshWorkspaces();
+  if(!wsList.length){
+    try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; }catch(_){}
+  }
+  currentWsId = wsList[0] && wsList[0].id;
+  try{ localStorage.setItem("ayanu.lastWs", currentWsId); }catch(_){}
+  await loadWorkspaceData();
+  currentDate=todayStr(); calYM=currentDate.slice(0,7);
   render();
-};
+}
+
+/* ---------------- Share / members modal ---------------- */
+function inviteUrl(token, type){ return location.origin+location.pathname+"?"+type+"="+token; }
+function openShareOverlay(){ document.getElementById("shareOverlay").classList.add("open"); }
+function closeShare(){ document.getElementById("shareOverlay").classList.remove("open"); }
+
+async function openShare(){
+  if(!currentWsId) return;
+  closeDrawer();
+  try{ renderShare(await api("/workspaces/"+currentWsId)); openShareOverlay(); }
+  catch(e){ alert(e.message); }
+}
+async function reopenShare(id){
+  try{ renderShare(await api("/workspaces/"+id)); await refreshWorkspaces(); }
+  catch(e){ alert(e.message); }
+}
+
+function renderShare(d){
+  const isAdmin = d.myRole==="admin" || d.myRole==="owner";
+  const isOwner = d.myRole==="owner";
+  const card=document.getElementById("shareCard");
+  card.innerHTML="";
+
+  card.appendChild(el("div",{class:"share-head"},
+    el("strong",{text:d.name}),
+    el("span",{class:"ws-role", text:roleLabel(d.myRole)}),
+    el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeShare})
+  ));
+
+  if(isAdmin){
+    const nameInput=el("input",{class:"share-input", value:d.name});
+    card.appendChild(el("div",{class:"share-row"},
+      nameInput,
+      el("button",{class:"mini-btn", text:"名前変更", onClick:async()=>{
+        try{ await api("/workspaces/"+d.id,{method:"PATCH",body:{name:nameInput.value}}); await reopenShare(d.id); }
+        catch(e){ alert(e.message); } }})
+    ));
+  }
+
+  // members
+  card.appendChild(el("div",{class:"share-section-title", text:"メンバー（"+d.members.length+"）"}));
+  d.members.forEach(m=>{
+    const isSelf = m.email.toLowerCase()===currentUserEmail.toLowerCase();
+    const row=el("div",{class:"member-row"},
+      el("span",{class:"member-email", text:m.email + (isSelf?"（あなた）":"")}));
+    if(isAdmin && m.role!=="owner"){
+      const sel=el("select",{class:"role-select", onChange:async(e)=>{
+        try{ await api("/workspaces/"+d.id+"/members/"+m.id,{method:"PATCH",body:{role:e.target.value}}); await reopenShare(d.id); }
+        catch(err){ alert(err.message); } }},
+        el("option",{value:"member", ...(m.role==="member"?{selected:"selected"}:{})},"メンバー"),
+        el("option",{value:"admin", ...(m.role==="admin"?{selected:"selected"}:{})},"管理者"),
+        isOwner ? el("option",{value:"owner"},"オーナーに譲渡") : null
+      );
+      row.appendChild(sel);
+      row.appendChild(el("button",{class:"mini-btn danger", text:"削除", onClick:async()=>{
+        if(!confirm(m.email+" を削除しますか？")) return;
+        try{ await api("/workspaces/"+d.id+"/members/"+m.id,{method:"DELETE"}); await reopenShare(d.id); }
+        catch(e){ alert(e.message); } }}));
+    } else {
+      row.appendChild(el("span",{class:"ws-role", text:roleLabel(m.role)}));
+    }
+    card.appendChild(row);
+  });
+
+  if(!isOwner){
+    card.appendChild(el("button",{class:"mini-btn block", text:"このワークスペースから退出", onClick:async()=>{
+      if(!confirm("退出しますか？")) return;
+      const me=d.members.find(m=>m.email.toLowerCase()===currentUserEmail.toLowerCase());
+      try{ await api("/workspaces/"+d.id+"/members/"+me.id,{method:"DELETE"}); closeShare(); await repickWorkspace(); }
+      catch(e){ alert(e.message); } }}));
+  }
+
+  if(isAdmin){
+    // email invite
+    card.appendChild(el("div",{class:"share-section-title", text:"メールで招待"}));
+    const mail=el("input",{class:"share-input", type:"email", placeholder:"メールアドレス"});
+    const mailRole=el("select",{class:"role-select"}, el("option",{value:"member"},"メンバー"), el("option",{value:"admin"},"管理者"));
+    card.appendChild(el("div",{class:"share-row"},
+      mail, mailRole,
+      el("button",{class:"mini-btn primary", text:"招待", onClick:async()=>{
+        try{ const r=await api("/workspaces/"+d.id+"/invites",{method:"POST",body:{email:mail.value, role:mailRole.value}});
+          await reopenShare(d.id);
+          if(r.emailSent){ alert("招待メールを送信しました：" + r.email); }
+          else{ prompt("メール送信は未設定です。このリンクを相手に送ってください（相手は同じメールでログイン/登録して参加）", inviteUrl(r.token,"invite")); }
+        }catch(e){ alert(e.message); } }})
+    ));
+    if(d.invites.length){
+      card.appendChild(el("div",{class:"share-sub", text:"保留中の招待"}));
+      d.invites.forEach(i=> card.appendChild(el("div",{class:"member-row"},
+        el("span",{class:"member-email", text:i.email}),
+        el("span",{class:"ws-role", text:roleLabel(i.role)}),
+        el("button",{class:"mini-btn", text:"リンク", onClick:()=>prompt("招待リンク", inviteUrl(i.token,"invite"))}),
+        el("button",{class:"mini-btn danger", text:"取消", onClick:async()=>{
+          try{ await api("/workspaces/"+d.id+"/invites/"+i.id,{method:"DELETE"}); await reopenShare(d.id); }
+          catch(e){ alert(e.message); } }})
+      )));
+    }
+
+    // invite link
+    card.appendChild(el("div",{class:"share-section-title", text:"招待リンク"}));
+    if(d.inviteToken){
+      const url=inviteUrl(d.inviteToken,"join");
+      card.appendChild(el("div",{class:"share-row"},
+        el("input",{class:"share-input", value:url, readonly:"readonly", onClick:(e)=>e.target.select()}),
+        el("button",{class:"mini-btn", text:"コピー", onClick:()=>{ try{ navigator.clipboard.writeText(url); }catch(_){ } }}),
+        el("button",{class:"mini-btn danger", text:"無効化", onClick:async()=>{
+          try{ await api("/workspaces/"+d.id+"/invite-link",{method:"DELETE"}); await reopenShare(d.id); }
+          catch(e){ alert(e.message); } }})
+      ));
+      card.appendChild(el("div",{class:"share-sub", text:"開いた人は「"+roleLabel(d.inviteRole)+"」として参加します"}));
+    } else {
+      const linkRole=el("select",{class:"role-select"}, el("option",{value:"member"},"メンバー"), el("option",{value:"admin"},"管理者"));
+      card.appendChild(el("div",{class:"share-row"},
+        linkRole,
+        el("button",{class:"mini-btn primary", text:"リンクを作成", onClick:async()=>{
+          try{ await api("/workspaces/"+d.id+"/invite-link",{method:"POST",body:{role:linkRole.value}}); await reopenShare(d.id); }
+          catch(e){ alert(e.message); } }})
+      ));
+    }
+  }
+
+  if(isOwner){
+    card.appendChild(el("hr",{class:"share-hr"}));
+    card.appendChild(el("button",{class:"mini-btn danger block", text:"ワークスペースを削除", onClick:async()=>{
+      if(!confirm("『"+d.name+"』を削除しますか？すべての日報・メンバーが削除されます。")) return;
+      try{ await api("/workspaces/"+d.id,{method:"DELETE"}); closeShare(); await repickWorkspace(); }
+      catch(e){ alert(e.message); } }}));
+  }
+}
 
 /* drawer open/close */
 const wsDrawerEl=document.getElementById("wsDrawer");
@@ -982,26 +1215,50 @@ document.getElementById("authPassword").addEventListener("keydown",e=>{
   if(e.key==="Enter"){ e.preventDefault(); submitAuth(); }
 });
 document.getElementById("logoutBtn").onclick=async ()=>{
+  await flushSave();
   try{ await api("/auth/logout", {method:"POST"}); }catch(_){}
-  currentUserEmail=null; store=emptyStore();
+  currentUserEmail=null; currentWsId=null; wsList=[]; pendingInvites=[]; data=emptyData();
   showApp(false); showAuth(true);
 };
+
+/* If the page was opened from an invite/join link, consume the token. */
+async function processInviteFromURL(){
+  const params=new URLSearchParams(location.search);
+  const join=params.get("join"), invite=params.get("invite");
+  if(!join && !invite) return;
+  try{
+    const r = join ? await api("/join/"+join, {method:"POST"})
+                   : await api("/invites/"+invite+"/accept", {method:"POST"});
+    pendingSelectWs=r.workspaceId;
+  }catch(e){ alert("招待の処理に失敗しました: "+e.message); }
+  history.replaceState({}, "", location.pathname);   // clean the URL
+}
 
 async function afterLogin(){
   showAuth(false); showApp(true);
   document.getElementById("userEmail").textContent=currentUserEmail;
-  try{
-    const r=await api("/state");
-    store=normalizeStore(r.data);
-  }catch(_){
-    // fall back to local cache if the fetch fails
-    let cached=null; try{ cached=JSON.parse(localStorage.getItem(CACHE_KEY)); }catch(__){}
-    store=normalizeStore(cached);
+
+  await processInviteFromURL();
+  await refreshWorkspaces();
+  if(!wsList.length){
+    try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; renderWorkspaces(); }catch(_){}
   }
+  let last=null; try{ last=localStorage.getItem("ayanu.lastWs"); }catch(_){}
+  currentWsId = (pendingSelectWs && wsList.some(w=>w.id===pendingSelectWs)) ? pendingSelectWs
+              : (last && wsList.some(w=>w.id===last)) ? last
+              : (wsList[0] && wsList[0].id);
+  pendingSelectWs=null;
+  try{ if(currentWsId) localStorage.setItem("ayanu.lastWs", currentWsId); }catch(_){}
+
+  await loadWorkspaceData();
   currentDate=todayStr(); calYM=currentDate.slice(0,7);
-  render();              // first render triggers a debounced save (harmless)
+  render();
   setSyncStatus("saved");
 }
+
+/* close the share modal on overlay click / Esc */
+document.getElementById("shareOverlay").onclick=(e)=>{ if(e.target.id==="shareOverlay") closeShare(); };
+document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeShare(); });
 
 /* ---------------- Go ---------------- */
 async function init(){

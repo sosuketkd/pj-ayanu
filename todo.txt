@@ -3,3 +3,52 @@ TD
 インポート・エクスポート機能
 レポーティング機能
 pj 名変更
+アカウント設定ができるようにしてください（中には，メアドとユーザーネーム，ユーザーID（初期設定後変更不可），通知設定，）
+ログインにgoogle, github, apple でのログインも可にしてください
+root の名前をayanu に変更しました．問題ないかフォルダ全体を確認してください．
+
+
+UI
+階層変更用の矢印はなくしてください
+優の色，いま青だと思いますが，なくしてください
+その代わりに，準のタスクはタスク自体の背景を若干灰色にしてください
+右上の日付の選択はなくして下さい
+ゴミ箱ボタンでなく三点ボタンにして，コピーやゴミ箱の選択肢をつけてください
+ワークスペース選択欄は三点ボタンで共有などの設定ができるようにしてください
+
+
+
+### Resend
+
+① Resend にサインアップ → 送信ドメイン ayanu.sixma.jp を追加
+Resend のダッシュボードで Domains → Add Domain に ayanu.sixma.jp を登録します。
+
+なぜこのドメインか：差出人（From）が既定で Ayanu <notify@ayanu.sixma.jp> だからです（lib/email.js:7）。From のドメインと認証するドメインを一致させないと送信が弾かれます。
+② 表示される DNSレコード（SPF / DKIM）を sixma.jp のDNSに登録して認証
+Resend が ayanu.sixma.jp 用に提示する数件のレコードを、sixma.jp を管理している DNS（お名前.com / Cloudflare / Route53 など）に追加します。
+
+SPF：このサーバーからの送信を許可する宣言
+DKIM：メールに署名するための鍵（なりすまし防止）
+反映には数分〜最大で数十分。Resend 側のドメイン状態が Verified になれば完了です。
+③ API キーを発行し、環境変数に設定
+Resend の API Keys で re_... を発行し、2か所に設定します。
+
+ローカル（.env.example を参考に .env へ）:
+
+
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxx
+APP_URL=https://ayanu.sixma.jp      # 任意
+APP_URL はメール本文の招待リンクの土台になる URL です（lib/app.js:11）。未設定ならリクエスト元のオリジンに自動フォールバックするので、ローカルでは省略可です。
+Vercel（Project Settings → Environment Variables）:
+
+変数	必須	役割
+RESEND_API_KEY	✅	これが無いとメール送信がスキップされる
+APP_URL	推奨	本番では https://ayanu.sixma.jp を明示しておくと、メール内リンクが常に正しい本番URLになる
+EMAIL_FROM	任意	差出人を変えたいときだけ（既定 Ayanu <notify@ayanu.sixma.jp>）
+設定後は 再デプロイ（vercel --prod）しないと環境変数が反映されません。
+
+④ ドメイン未認証のうちのフォールバックについて
+これは安全策の説明です。②が完了するまでは Resend が送信を拒否しますが、Ayanu は送信失敗をリクエストの失敗にしません（best-effort、lib/app.js:213-223）。
+
+送れなかった場合、API は emailSent: false を返し、フロントが**「このリンクを相手に送ってください」というコピー用リンク**を表示します（index.html:794）。
+そのため、DNS 認証が済む前でも招待リンクを手動で共有すればアプリは普通に使えます。
