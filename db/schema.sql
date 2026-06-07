@@ -64,8 +64,8 @@ create table if not exists workspace_data (
 );
 
 -- Per-member content (tickets + AfterCheck). Each member keeps their OWN TD in a
--- workspace; team admins can read everyone's (oversight). Personal workspaces just
--- have the single owner row.
+-- workspace, and team admins can read everyone's (oversight). Personal workspaces
+-- just have the single owner row.
 create table if not exists member_data (
   workspace_id uuid references workspaces(id) on delete cascade,
   user_id      uuid references users(id) on delete cascade,

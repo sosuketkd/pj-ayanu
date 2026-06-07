@@ -11,7 +11,11 @@ if (!url) { console.error('DATABASE_URL is not set'); process.exit(1); }
 
 const pool = new Pool({ connectionString: url });
 const schema = await readFile(new URL('../db/schema.sql', import.meta.url), 'utf8');
-const statements = schema.split(';').map((s) => s.trim()).filter(Boolean);
+// Strip `-- ...` line comments before splitting on `;`, otherwise a semicolon
+// inside a comment would break a statement in two. (No `;` appears in our string
+// literals, so splitting on `;` after comment removal is safe.)
+const sql = schema.replace(/--[^\n]*/g, '');
+const statements = sql.split(';').map((s) => s.trim()).filter(Boolean);
 
 try {
   for (const stmt of statements) {
