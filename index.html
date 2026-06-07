@@ -110,6 +110,32 @@
   .member-email{flex:1; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
   .share-hr{border:none; border-top:1px solid var(--line); margin:16px 0 4px;}
 
+  /* ---- Report modal ---- */
+  .report-card{max-width:580px;}
+  .report-range{display:flex; align-items:center; gap:8px; margin:10px 0 6px;}
+  .report-range .share-input{flex:none; width:auto;}
+  .report-presets{display:flex; gap:6px; margin:2px 0 8px;}
+  .report-cards{display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:12px 0;}
+  .report-stat{border:1px solid var(--line); border-radius:10px; padding:10px 8px; text-align:center; background:#fafbfc;}
+  .report-stat .rs-val{font-size:18px; font-weight:700; color:var(--ink);}
+  .report-stat .rs-lbl{font-size:11px; color:var(--muted); margin-top:2px;}
+  .report-table{width:100%; border-collapse:collapse; margin-top:12px; font-size:12px;}
+  .report-table th, .report-table td{border:1px solid var(--line); padding:5px 8px; text-align:right; white-space:nowrap;}
+  .report-table th:first-child, .report-table td:first-child{text-align:left;}
+  .report-table thead th{background:#f4f6f9; font-weight:700; color:var(--ink);}
+  .report-table .report-total td{font-weight:700; background:#fafbfc;}
+  .report-empty{font-size:13px; color:var(--muted); padding:18px 4px;}
+  .report-actions{display:flex; gap:8px; margin-top:16px;}
+
+  /* ---- Print (used by the report's "印刷 / PDF" button) ---- */
+  @media print{
+    header, main, .ws-overlay, .ws-drawer, .auth-overlay, #shareOverlay{display:none !important;}
+    #reportOverlay{position:static !important; display:block !important; background:#fff !important; padding:0 !important; overflow:visible !important;}
+    #reportOverlay .report-card{max-width:none !important; box-shadow:none !important; border-radius:0 !important; padding:0 !important;}
+    .report-actions, .report-presets, #reportOverlay .icon-btn{display:none !important;}
+    .report-range .share-input{border:none; padding:0;}
+  }
+
   /* ---- Month calendar ---- */
   .cal{padding:10px 10px 4px;}
   .cal-head{display:flex; align-items:center; gap:4px; margin-bottom:6px;}
@@ -311,6 +337,7 @@
     <input type="date" id="datePicker">
     <button id="nextDay" title="次の日">›</button>
     <button id="todayBtn" class="btn">今日</button>
+    <button id="reportBtn" class="btn" title="レポートを表示">📊 レポート</button>
   </div>
   <div class="user-area" id="userArea" style="display:none">
     <span class="sync-status" id="syncStatus"></span>
@@ -339,6 +366,11 @@
     <button class="auth-submit" id="authSubmit">ログイン</button>
     <div class="auth-error" id="authError"></div>
   </div>
+</div>
+
+<!-- Report modal (top-level so print can isolate it) -->
+<div class="share-overlay" id="reportOverlay">
+  <div class="share-card report-card" id="reportCard"></div>
 </div>
 
 <main style="display:none">
@@ -1256,9 +1288,148 @@ async function afterLogin(){
   setSyncStatus("saved");
 }
 
-/* close the share modal on overlay click / Esc */
+/* ---------------- Report ---------------- */
+let reportRange = null;   // {from, to} ISO dates, inclusive
+
+/* Flatten a Task[] (including nested children) into a single list. */
+function flattenTasks(list, out){
+  out = out || [];
+  (list||[]).forEach(t=>{ out.push(t); if(t.children && t.children.length) flattenTasks(t.children, out); });
+  return out;
+}
+function estOf(t){ const n=parseFloat(t.est); return isNaN(n)?0:n; }
+function pct(n,d){ return d ? Math.round(n/d*100)+"%" : "—"; }
+function fmtH(h){ return String(Math.round(h*10)/10); }
+
+/* Aggregate the current workspace's tickets within [from,to] (inclusive ISO dates). */
+function computeReport(from, to){
+  const tickets = ws().tickets || {};
+  const days = Object.keys(tickets).filter(d=> d>=from && d<=to).sort();
+  const rows = days.map(d=>{
+    const tasks = flattenTasks(tickets[d].tasks);
+    const done = tasks.filter(t=>t.done);
+    return {
+      date: d,
+      total: tasks.length,
+      done: done.length,
+      est: tasks.reduce((s,t)=>s+estOf(t),0),
+      estDone: done.reduce((s,t)=>s+estOf(t),0),
+      top: tasks.filter(t=>t.prio!=="semi").length,
+      semi: tasks.filter(t=>t.prio==="semi").length,
+    };
+  });
+  const sum = rows.reduce((a,r)=>({
+    total:a.total+r.total, done:a.done+r.done, est:a.est+r.est,
+    estDone:a.estDone+r.estDone, top:a.top+r.top, semi:a.semi+r.semi,
+  }), {total:0,done:0,est:0,estDone:0,top:0,semi:0});
+  const ac = acList();
+  return {rows, sum, days:rows.length, ac:{total:ac.length, done:ac.filter(a=>a.done).length}};
+}
+
+function defaultReportRange(){ const to=todayStr(); return {from: to.slice(0,8)+"01", to}; }
+function lastNDays(n){ const d=new Date(); d.setDate(d.getDate()-(n-1)); return {from:isoOf(d), to:todayStr()}; }
+function allRange(){ const ks=Object.keys(ws().tickets||{}).sort(); return {from:ks[0]||todayStr(), to:ks[ks.length-1]||todayStr()}; }
+
+function openReport(){
+  if(!reportRange) reportRange = defaultReportRange();
+  document.getElementById("reportOverlay").classList.add("open");
+  renderReport();
+}
+function closeReport(){ document.getElementById("reportOverlay").classList.remove("open"); }
+
+function statCard(label, val){
+  return el("div",{class:"report-stat"}, el("div",{class:"rs-val", text:val}), el("div",{class:"rs-lbl", text:label}));
+}
+
+function renderReport(){
+  const card = document.getElementById("reportCard");
+  card.innerHTML="";
+  const {from, to} = reportRange;
+  const rep = computeReport(from, to);
+  const wsName = (curWs() && curWs().name) || "ワークスペース";
+
+  card.appendChild(el("div",{class:"share-head"},
+    el("strong",{text:"📊 レポート"}),
+    el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeReport})
+  ));
+  card.appendChild(el("div",{class:"share-sub", text:wsName+" ・ 期間集計"}));
+
+  // range pickers
+  card.appendChild(el("div",{class:"report-range"},
+    el("span",{class:"share-sub", text:"期間"}),
+    el("input",{type:"date", class:"share-input", value:from, onChange:e=>{ reportRange.from=e.target.value||from; renderReport(); }}),
+    el("span",{text:"〜"}),
+    el("input",{type:"date", class:"share-input", value:to, onChange:e=>{ reportRange.to=e.target.value||to; renderReport(); }})
+  ));
+  card.appendChild(el("div",{class:"report-presets"},
+    el("button",{class:"mini-btn", text:"今月", onClick:()=>{ reportRange=defaultReportRange(); renderReport(); }}),
+    el("button",{class:"mini-btn", text:"過去30日", onClick:()=>{ reportRange=lastNDays(30); renderReport(); }}),
+    el("button",{class:"mini-btn", text:"全期間", onClick:()=>{ reportRange=allRange(); renderReport(); }})
+  ));
+
+  // summary stats
+  const s = rep.sum;
+  card.appendChild(el("div",{class:"report-cards"},
+    statCard("タスク", s.total+"件"),
+    statCard("完了", s.done+"件"),
+    statCard("完了率", pct(s.done, s.total)),
+    statCard("見積合計", fmtH(s.est)+"h"),
+    statCard("完了分", fmtH(s.estDone)+"h"),
+    statCard("対象日数", rep.days+"日")
+  ));
+  card.appendChild(el("div",{class:"share-sub",
+    text:"AfterCheck（現在）: "+rep.ac.done+"/"+rep.ac.total+"（"+pct(rep.ac.done, rep.ac.total)+"）"}));
+
+  // per-day table
+  if(rep.rows.length){
+    const tbl = el("table",{class:"report-table"});
+    tbl.appendChild(el("thead",{}, el("tr",{},
+      ...["日付","タスク","完了","完了率","優","準","見積h","完了h"].map(h=>el("th",{text:h}))
+    )));
+    const tb = el("tbody");
+    rep.rows.forEach(r=> tb.appendChild(el("tr",{},
+      el("td",{text:r.date}), el("td",{text:String(r.total)}), el("td",{text:String(r.done)}),
+      el("td",{text:pct(r.done,r.total)}), el("td",{text:String(r.top)}), el("td",{text:String(r.semi)}),
+      el("td",{text:fmtH(r.est)}), el("td",{text:fmtH(r.estDone)})
+    )));
+    tb.appendChild(el("tr",{class:"report-total"},
+      el("td",{text:"合計"}), el("td",{text:String(s.total)}), el("td",{text:String(s.done)}),
+      el("td",{text:pct(s.done,s.total)}), el("td",{text:String(s.top)}), el("td",{text:String(s.semi)}),
+      el("td",{text:fmtH(s.est)}), el("td",{text:fmtH(s.estDone)})
+    ));
+    tbl.appendChild(tb);
+    card.appendChild(tbl);
+  } else {
+    card.appendChild(el("div",{class:"report-empty", text:"この期間に入力のある日付はありません。"}));
+  }
+
+  card.appendChild(el("div",{class:"report-actions"},
+    el("button",{class:"mini-btn primary", text:"CSV出力", onClick:()=>exportReportCsv(rep, wsName)}),
+    el("button",{class:"mini-btn", text:"印刷 / PDF", onClick:()=>window.print()})
+  ));
+}
+
+/* Build a CSV of the per-day report and trigger a download (BOM for Excel/日本語). */
+function exportReportCsv(rep, wsName){
+  const head = ["日付","タスク数","完了","完了率","優","準","見積h","完了h"];
+  const lines = [head.join(",")];
+  rep.rows.forEach(r=> lines.push([r.date, r.total, r.done, pct(r.done,r.total), r.top, r.semi, fmtH(r.est), fmtH(r.estDone)].join(",")));
+  const s=rep.sum;
+  lines.push(["合計", s.total, s.done, pct(s.done,s.total), s.top, s.semi, fmtH(s.est), fmtH(s.estDone)].join(","));
+  const csv = "﻿"+lines.join("\r\n");
+  const blob = new Blob([csv], {type:"text/csv;charset=utf-8"});
+  const url = URL.createObjectURL(blob);
+  const a = el("a",{href:url, download:"ayanu-report_"+reportRange.from+"_"+reportRange.to+".csv"});
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+
+document.getElementById("reportBtn").onclick=openReport;
+
+/* close the share / report modals on overlay click / Esc */
 document.getElementById("shareOverlay").onclick=(e)=>{ if(e.target.id==="shareOverlay") closeShare(); };
-document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeShare(); });
+document.getElementById("reportOverlay").onclick=(e)=>{ if(e.target.id==="reportOverlay") closeReport(); };
+document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeShare(); closeReport(); } });
 
 /* ---------------- Go ---------------- */
 async function init(){
