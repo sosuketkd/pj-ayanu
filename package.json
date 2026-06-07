@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node server.js",
+    "dev": "node src/server.js",
     "dev:vercel": "vercel dev",
     "db:setup": "node scripts/setup-db.js",
     "db:migrate": "node scripts/migrate-v2.js"

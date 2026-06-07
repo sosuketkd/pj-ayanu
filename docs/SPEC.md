@@ -20,23 +20,23 @@
 
 | 層 | 採用技術 |
 |----|----------|
-| フロント | 単一ファイル `index.html`（バニラ JS、ビルド工程なし） |
-| API | [Hono](https://hono.dev/) 4.x（`lib/app.js` に全ルート定義） |
-| 実行環境 | Vercel（本番、`api/[[...route]].js`）/ ローカルは `@hono/node-server`（`server.js`） |
+| フロント | `public/`（`index.html` + `styles.css` + `app.js`、バニラ JS、ビルド工程なし） |
+| API | [Hono](https://hono.dev/) 4.x（`src/app.js` がルートを束ね、`src/routes/*` に分割） |
+| 実行環境 | Vercel（本番、`api/index.js`）/ ローカルは `@hono/node-server`（`src/server.js`） |
 | DB | [Neon](https://neon.tech/) サーバーレス Postgres（`@neondatabase/serverless`） |
 | 認証 | メール/パスワード。`bcryptjs` でハッシュ化、JWT（`hono/jwt`, HS256）を httpOnly Cookie に保持 |
 
-**設計方針**: 既存の単一ファイルフロントをほぼそのまま使うため、各ワークスペースの中身
+**設計方針**: ビルド工程のないバニラJSフロントをほぼそのまま使うため、各ワークスペースの中身
 （チケット群 + AfterCheck）を 1 つの JSONB（`workspace_data.data`）として丸ごと保存する
 「JSON ブロブ / ワークスペース」方式。タスク単位の検索・共有が必要になったら正規化（tickets/tasks テーブル）へ移行する想定。
 
 ### リクエストの流れ
 ```
-ブラウザ (index.html)
+ブラウザ (public/index.html)
   └─ fetch("/api/...") credentials:include
-       ├─ ローカル: server.js が静的配信 + Hono API を同一オリジンで提供
-       └─ 本番:    Vercel が index.html を静的配信、/api/* を api/[[...route]].js → Hono へ
-            └─ lib/app.js (Hono) ─ lib/db.js (Neon sql) ─ Neon Postgres
+       ├─ ローカル: src/server.js が静的配信 + Hono API を同一オリジンで提供
+       └─ 本番:    Vercel が public/ を静的配信、/api/* を api/index.js → Hono へ
+            └─ src/app.js (Hono) ─ src/routes/* ─ src/lib/db.js (Neon sql) ─ Neon Postgres
 ```
 
 ---
@@ -44,22 +44,37 @@
 ## 3. ディレクトリ構成
 
 ```
-keiza/
-├── index.html              フロント全部（HTML+CSS+JS、約56KB）
-├── server.js               ローカル開発サーバー（静的配信 + API、ポート3000）
-├── api/[[...route]].js      Vercel 用 catch-all。Hono app を handle() でラップ
-├── lib/
-│   ├── app.js              Hono アプリ本体。全 API ルート + 認可ロジック
-│   ├── auth.js             パスワードハッシュ / JWT 発行・検証 / Cookie 寿命
-│   └── db.js               Neon sql クライアント（テスト時は pg にフォールバック）
+ayanu/
+├── public/
+│   ├── index.html          画面のマークアップ
+│   ├── styles.css          スタイル
+│   └── app.js              フロントのロジック（バニラ JS）
+├── api/index.js            Vercel 用ハンドラ。Hono app を Node (req,res) にブリッジ
+├── src/
+│   ├── server.js           ローカル開発サーバー（静的配信 + API、ポート3000）
+│   ├── app.js              Hono アプリ本体。ルートを束ねる
+│   ├── middleware/
+│   │   └── auth.js         requireUser（ログイン必須ゲート）/ setAuthCookie
+│   ├── routes/
+│   │   ├── auth.js         signup / login / logout / me
+│   │   ├── workspaces.js   ワークスペース CRUD + 内容（日報＋AfterCheck）
+│   │   ├── members.js      メンバーのロール変更 / 削除・退出
+│   │   └── invites.js      メール招待 / 招待リンク / 参加
+│   ├── lib/
+│   │   ├── auth.js         パスワードハッシュ / JWT 発行・検証 / Cookie 寿命
+│   │   ├── db.js           Neon sql クライアント（テスト時は pg にフォールバック）
+│   │   └── email.js        招待メール送信（Resend HTTP API）
+│   └── utils.js            共通ヘルパ（atLeast / validEmail / membership / baseUrl）
 ├── db/
 │   └── schema.sql          DB スキーマ（DDL）
 ├── scripts/
 │   ├── setup-db.js         schema.sql を流してテーブル作成（npm run db:setup）
 │   └── migrate-v2.js       v1 の app_state を v2 ワークスペースへ移行（冪等、npm run db:migrate）
-├── .env / .env.example     DATABASE_URL, JWT_SECRET
-├── note.txt                旧・簡易仕様メモ（※現状とずれあり。後述）
-└── todo.txt                未実装の要望リスト（後述）
+├── docs/
+│   ├── SPEC.md             本書（現状仕様）
+│   ├── note.txt            旧・簡易仕様メモ（※現状とずれあり。9.1 参照）
+│   └── todo.txt            未実装の要望リスト（9.2 参照）
+└── .env / .env.example     DATABASE_URL, JWT_SECRET ほか
 ```
 
 ---
@@ -216,7 +231,7 @@ cp .env.example .env          # DATABASE_URL と JWT_SECRET を記入
 export $(grep -v '^#' .env | xargs)
 npm run db:setup              # テーブル作成
 npm run db:migrate            # （任意）v1 データを移行・冪等
-npm run dev                   # http://localhost:3000 （server.js、Vercel CLI 不要）
+npm run dev                   # http://localhost:3000 （src/server.js、Vercel CLI 不要）
 ```
 
 環境変数:
@@ -230,7 +245,9 @@ vercel            # 初回リンク
 # Project Settings → Environment Variables に DATABASE_URL / JWT_SECRET を登録
 vercel --prod
 ```
-`api/[[...route]].js` は Vercel の **Node.js ランタイム**で動作（bcryptjs のため）。
+`api/index.js` は Vercel の **Node.js ランタイム**で動作（bcryptjs のため）。
+Vercel の Node ランタイムはリクエストボディを事前パースするため、`api/index.js` は
+パース済みの `req.body` から Web `Request` を組み立てて Hono にブリッジしている。
 
 ---
 
@@ -244,7 +261,8 @@ vercel --prod
   **AfterCheck（毎日共通・日付非依存）** に役割が変わっている。note.txt は歴史的経緯の参考に留める。
 
 ### 9.2 `todo.txt` の未実装要望
-- 機能: TD のインポート/エクスポート、レポーティング、プロジェクト（pj）名変更。
+- 機能: TD 一式のインポート/エクスポート、アカウント設定画面、ソーシャルログイン。
+  （※レポーティング、ワークスペース名変更、レポートの CSV 出力は実装済み）
 - UI（現状コードに未反映）:
   - 階層変更用の矢印（`⇥`/`⇤`）を廃止したい → **現状は残っている**。
   - 優先度「優」の色（青）を廃止し、代わりに「準」のタスクは行背景を薄いグレーにしたい → **未対応**。

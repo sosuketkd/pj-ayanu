@@ -1,4 +1,4 @@
-import { app } from '../lib/app.js';
+import { app } from '../src/app.js';
 
 // Run on Vercel's Node.js runtime (needed for bcryptjs).
 export const runtime = 'nodejs';
