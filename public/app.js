@@ -39,16 +39,18 @@ async function api(path, opts={}){
 }
 
 /* ---- persistence (per workspace, debounced) ---- */
-let saveTimer=null, dirty=false;
+let saveTimer=null, dirty=false, suppressSave=false;
 function setSyncStatus(s){
   const el=document.getElementById("syncStatus");
   if(el) el.textContent = s==="saving"?"保存中…" : s==="saved"?"保存済み" : s==="error"?"保存失敗" : "";
 }
+/* Render without scheduling a server write — for programmatic loads (switch/refresh). */
+function renderClean(){ suppressSave=true; try{ render(); } finally { suppressSave=false; } }
 /* Called by the app on every change. */
 function save(){
   if(!currentWsId || viewMode!=="edit" || currentWsId===AGG_ID) return; // read-only modes don't persist
-  try{ localStorage.setItem(CACHE_KEY+":"+currentWsId, JSON.stringify(data)); }catch(_){}
-  if(!currentUserEmail) return;
+  try{ localStorage.setItem(CACHE_KEY+":"+currentWsId, JSON.stringify(data)); }catch(_){} // always mirror to cache
+  if(suppressSave || !currentUserEmail) return;   // programmatic load: cache only, no server write / no dirty
   dirty=true; setSyncStatus("saving");
   clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>persist(currentWsId), 600);
@@ -295,11 +297,20 @@ async function selectWorkspace(id){
   await flushSave();
   currentWsId=id;
   try{ localStorage.setItem("ayanu.lastWs", id); }catch(_){}
-  await loadWorkspaceData();
   setView("edit"); updateModeButtons();
   closeDrawer();
   currentDate=todayStr(); calYM=currentDate.slice(0,7);
-  render(); setSyncStatus("saved");
+
+  // instant: render the cached copy right away
+  let cached=null; try{ cached=JSON.parse(localStorage.getItem(CACHE_KEY+":"+id)); }catch(_){}
+  data=normalizeData(cached);
+  renderClean(); setSyncStatus("saved");
+
+  // then refresh from the server; apply only if still here and the user hasn't edited
+  try{
+    const r=await api("/workspaces/"+id+"/data");
+    if(id===currentWsId && viewMode==="edit" && !dirty){ data=normalizeData(r.data); renderClean(); }
+  }catch(_){ /* keep the cached copy */ }
 }
 
 async function loadWorkspaceData(){
@@ -430,9 +441,10 @@ function renderOverview(){
   });
   if(!members.length) root.appendChild(el("div",{class:"ro-empty", text:"メンバーがいません。"}));
 }
-async function backToEdit(){
+function backToEdit(){
+  // `data` is untouched while viewing the dashboard, so just re-render it instantly
   setView("edit"); updateModeButtons();
-  await loadWorkspaceData(); render(); setSyncStatus("saved");
+  renderClean(); setSyncStatus("saved");
 }
 document.getElementById("overviewBtn").onclick=openOverview;
 
@@ -592,10 +604,13 @@ function renderShare(d){
 }
 
 /* ---------------- Account settings ---------------- */
+let accountCache=null;   // last-known account info (primed at login) for instant modal open
 function closeAccount(){ document.getElementById("accountOverlay").classList.remove("open"); }
 async function openAccount(){
-  try{ renderAccount(await api("/account")); document.getElementById("accountOverlay").classList.add("open"); }
-  catch(e){ alert("アカウント情報の取得に失敗しました: "+e.message); }
+  const ov=document.getElementById("accountOverlay");
+  if(accountCache){ renderAccount(accountCache); ov.classList.add("open"); }   // instant from cache
+  try{ const a=await api("/account"); accountCache=a; renderAccount(a); ov.classList.add("open"); }
+  catch(e){ if(!accountCache) alert("アカウント情報の取得に失敗しました: "+e.message); }
 }
 function renderAccount(a){
   const card=document.getElementById("accountCard");
@@ -622,6 +637,7 @@ function renderAccount(a){
     if(!handleSet) payload.handle = handleInput.value.trim();
     try{
       const r=await api("/account",{method:"PATCH",body:payload});
+      accountCache=r;
       currentUserEmail=r.email;
       document.getElementById("userEmail").textContent = r.username || r.email;
       renderAccount(r);   // re-render (handle now locked, fields normalized)
@@ -1062,7 +1078,7 @@ async function afterLogin(){
       refreshWorkspaces(),
       (last && last!==AGG_ID) ? api("/workspaces/"+last+"/data").then(r=>r.data).catch(()=>null) : Promise.resolve(null),
     ]);
-    if(acct && acct.username) document.getElementById("userEmail").textContent=acct.username;
+    if(acct){ accountCache=acct; if(acct.username) document.getElementById("userEmail").textContent=acct.username; }
 
     if(!wsList.length){
       try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; renderWorkspaces(); }catch(_){}
@@ -1079,7 +1095,7 @@ async function afterLogin(){
     else await loadWorkspaceData();
     setView("edit"); updateModeButtons();
     currentDate=todayStr(); calYM=currentDate.slice(0,7);
-    render();
+    renderClean();
     setSyncStatus("saved");
   } finally {
     reveal();   // always reveal (even on partial failure) so the splash never sticks
