@@ -9,6 +9,14 @@
     margin:0; font-family:-apple-system,BlinkMacSystemFont,"Hiragino Kaku Gothic ProN","Segoe UI",sans-serif;
     background:var(--bg); color:var(--ink); font-size:14px; line-height:1.5;
   }
+  /* boot splash (visible until JS reveals the app) */
+  #bootSplash{position:fixed; inset:0; z-index:10000; background:var(--bg);
+    display:flex; align-items:center; justify-content:center;}
+  .boot-inner{display:flex; flex-direction:column; align-items:center; gap:18px;}
+  .boot-logo{font-size:20px; font-weight:800; color:var(--ink); opacity:.9;}
+  .boot-spinner{width:26px; height:26px; border:3px solid var(--line);
+    border-top-color:var(--accent); border-radius:50%; animation:boot-spin .8s linear infinite;}
+  @keyframes boot-spin{to{transform:rotate(360deg);}}
   header{
     background:var(--panel); border-bottom:1px solid var(--line);
     padding:12px 20px; display:flex; align-items:center; gap:14px; flex-wrap:wrap;

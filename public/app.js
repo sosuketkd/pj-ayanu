@@ -1044,30 +1044,46 @@ async function processInviteFromURL(){
   history.replaceState({}, "", location.pathname);   // clean the URL
 }
 
+function hideBoot(){ const b=document.getElementById("bootSplash"); if(b) b.style.display="none"; }
+/* Reveal the fully-rendered app (or login) and drop the boot splash. */
+function reveal(){ showAuth(false); showApp(true); hideBoot(); }
+
 async function afterLogin(){
   viewMode="edit";
-  showAuth(false); showApp(true);
   document.getElementById("userEmail").textContent=currentUserEmail;
-  try{ const a=await api("/account"); if(a.username) document.getElementById("userEmail").textContent=a.username; }catch(_){}
+  try{
+    await processInviteFromURL();
 
-  await processInviteFromURL();
-  await refreshWorkspaces();
-  if(!wsList.length){
-    try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; renderWorkspaces(); }catch(_){}
+    let last=null; try{ last=localStorage.getItem("ayanu.lastWs"); }catch(_){}
+    // Fetch account + workspaces in parallel, and optimistically the remembered
+    // workspace's data, so the common (returning-user) path is a single round-trip.
+    const [acct, , earlyData] = await Promise.all([
+      api("/account").catch(()=>null),
+      refreshWorkspaces(),
+      (last && last!==AGG_ID) ? api("/workspaces/"+last+"/data").then(r=>r.data).catch(()=>null) : Promise.resolve(null),
+    ]);
+    if(acct && acct.username) document.getElementById("userEmail").textContent=acct.username;
+
+    if(!wsList.length){
+      try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; renderWorkspaces(); }catch(_){}
+    }
+    if(last===AGG_ID && !pendingSelectWs){ await openAggregate(); return; }   // restore combined view (reveal in finally)
+
+    currentWsId = (pendingSelectWs && wsList.some(w=>w.id===pendingSelectWs)) ? pendingSelectWs
+                : (last && wsList.some(w=>w.id===last)) ? last
+                : (wsList[0] && wsList[0].id);
+    pendingSelectWs=null;
+    try{ if(currentWsId) localStorage.setItem("ayanu.lastWs", currentWsId); }catch(_){}
+
+    if(currentWsId===last && earlyData!=null) data=normalizeData(earlyData);  // reuse the parallel fetch
+    else await loadWorkspaceData();
+    setView("edit"); updateModeButtons();
+    currentDate=todayStr(); calYM=currentDate.slice(0,7);
+    render();
+    setSyncStatus("saved");
+  } finally {
+    reveal();   // always reveal (even on partial failure) so the splash never sticks
   }
-  let last=null; try{ last=localStorage.getItem("ayanu.lastWs"); }catch(_){}
-  if(last===AGG_ID && !pendingSelectWs){ await openAggregate(); return; }   // restore combined view
-  currentWsId = (pendingSelectWs && wsList.some(w=>w.id===pendingSelectWs)) ? pendingSelectWs
-              : (last && wsList.some(w=>w.id===last)) ? last
-              : (wsList[0] && wsList[0].id);
-  pendingSelectWs=null;
-  try{ if(currentWsId) localStorage.setItem("ayanu.lastWs", currentWsId); }catch(_){}
-
-  await loadWorkspaceData();
-  setView("edit"); updateModeButtons();
-  currentDate=todayStr(); calYM=currentDate.slice(0,7);
-  render();
-  setSyncStatus("saved");
 }
 
 /* ---------------- Report ---------------- */
@@ -1247,15 +1263,17 @@ function showOAuthError(){
 }
 
 async function init(){
+  setTimeout(hideBoot, 8000);   // safety: never leave the splash stuck
   showOAuthError();
   renderSocialButtons();
   try{
     const me=await api("/auth/me");      // existing session?
     currentUserEmail=me.email;
-    await afterLogin();
+    await afterLogin();                  // renders, then reveals + hides splash
   }catch(_){
-    showApp(false); showAuth(true);
     setAuthMode("login");
+    showApp(false); showAuth(true);
+    hideBoot();                          // show the login screen cleanly
   }
 }
 init();
