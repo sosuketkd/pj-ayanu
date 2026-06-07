@@ -4,7 +4,7 @@
 端末をまたいで同期できます。
 
 - フロント: `public/`（`index.html` + `styles.css` + `app.js`、バニラJS・ビルド工程なし）
-- API: [Hono](https://hono.dev/) on Vercel（エントリ `api/`、実装 `src/`）
+- API: [Hono](https://hono.dev/) + **TypeScript** on Vercel（エントリ `api/`、実装 `src/`。ローカルは `tsx`、本番は Vercel が自動コンパイル）
 - DB: [Neon](https://neon.tech/)（サーバーレス Postgres）
 - 認証: メール / パスワード（パスワードは bcrypt でハッシュ化、JWT を httpOnly Cookie で保持）
 

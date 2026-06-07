@@ -1,13 +1,17 @@
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { app } from '../src/app.js';
 
 // Run on Vercel's Node.js runtime (needed for bcryptjs).
 export const runtime = 'nodejs';
 
+// Vercel augments the Node request with an already-parsed `body`.
+type VercelRequest = IncomingMessage & { body?: unknown };
+
 // Vercel's Node runtime invokes the default export as a Node (req, res) handler
 // and pre-parses the request body — so reading the raw stream (as hono/vercel or
 // @hono/node-server do) hangs on POST. Bridge to Hono by building a Web Request
 // from Vercel's already-parsed req.body instead.
-export default async function handler(req, res) {
+export default async function handler(req: VercelRequest, res: ServerResponse) {
   const host = req.headers.host || 'localhost';
   const url = `https://${host}${req.url}`;
 
@@ -16,7 +20,7 @@ export default async function handler(req, res) {
     if (v != null) headers.set(k, Array.isArray(v) ? v.join(', ') : String(v));
   }
 
-  let body;
+  let body: string | Buffer | undefined;
   const method = (req.method || 'GET').toUpperCase();
   if (method !== 'GET' && method !== 'HEAD' && req.body != null) {
     if (typeof req.body === 'string' || Buffer.isBuffer(req.body)) {

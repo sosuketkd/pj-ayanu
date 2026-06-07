@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 // The http `neon()` client is tagged-template only (no raw `.query()`), so for
 // running schema DDL we use the pg-compatible Pool over WebSocket.
-neonConfig.webSocketConstructor = WebSocket; // Node 18+/24 native WebSocket
+neonConfig.webSocketConstructor = WebSocket as any; // Node 18+/24 native WebSocket
 
 const url = process.env.DATABASE_URL;
 if (!url) { console.error('DATABASE_URL is not set'); process.exit(1); }

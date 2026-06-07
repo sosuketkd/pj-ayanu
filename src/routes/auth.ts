@@ -5,8 +5,9 @@ import { sql } from '../lib/db.js';
 import { hashPassword, verifyPassword, makeToken } from '../lib/auth.js';
 import { requireUser, setAuthCookie } from '../middleware/auth.js';
 import { validEmail } from '../utils.js';
+import type { AppEnv } from '../types.js';
 
-const router = new Hono();
+const router = new Hono<AppEnv>();
 
 router.post('/auth/signup', async (c) => {
   const { email, password } = await c.req.json().catch(() => ({}));
@@ -20,7 +21,7 @@ router.post('/auth/signup', async (c) => {
   const hash = await hashPassword(password);
   const rows = await sql`
     insert into users (email, password_hash) values (${mail}, ${hash}) returning id, email`;
-  setAuthCookie(c, await makeToken(rows[0]));
+  setAuthCookie(c, await makeToken(rows[0] as { id: string; email: string }));
   return c.json({ email: rows[0].email });
 });
 
@@ -31,7 +32,7 @@ router.post('/auth/login', async (c) => {
   if (!rows.length || !(await verifyPassword(password || '', rows[0].password_hash))) {
     return c.json({ error: 'メールアドレスまたはパスワードが違います' }, 401);
   }
-  setAuthCookie(c, await makeToken(rows[0]));
+  setAuthCookie(c, await makeToken(rows[0] as { id: string; email: string }));
   return c.json({ email: rows[0].email });
 });
 

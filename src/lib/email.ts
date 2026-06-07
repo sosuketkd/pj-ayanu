@@ -6,9 +6,13 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 // ASCII display name by default for deliverability; override via EMAIL_FROM if desired.
 const EMAIL_FROM = process.env.EMAIL_FROM || 'Ayanu <notify@ayanu.sixma.jp>';
 
-export function emailEnabled() { return !!RESEND_API_KEY; }
+type SendResult = { sent: boolean; skipped?: boolean; error?: string };
 
-export async function sendEmail({ to, subject, html, text }) {
+export function emailEnabled(): boolean { return !!RESEND_API_KEY; }
+
+export async function sendEmail(
+  { to, subject, html, text }: { to: string; subject: string; html: string; text: string },
+): Promise<SendResult> {
   if (!RESEND_API_KEY) {
     console.warn('[ayanu] RESEND_API_KEY not set — skipping email to', to);
     return { sent: false, skipped: true };
@@ -30,11 +34,15 @@ export async function sendEmail({ to, subject, html, text }) {
   }
 }
 
-function esc(s) {
-  return String(s).replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' };
+function esc(s: unknown): string {
+  return String(s).replace(/[&<>"]/g, (ch) => ESC[ch]);
 }
 
-export async function sendInviteEmail({ to, workspaceName, acceptUrl, role, inviter }) {
+export async function sendInviteEmail(
+  { to, workspaceName, acceptUrl, role, inviter }:
+  { to: string; workspaceName: string; acceptUrl: string; role: string; inviter: string },
+): Promise<SendResult> {
   const roleJa = role === 'admin' ? '管理者' : 'メンバー';
   const subject = `「${workspaceName}」への招待 — 綾整(Ayanu)`;
   const text =

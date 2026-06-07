@@ -3,7 +3,7 @@
 // Usage: DATABASE_URL=... node scripts/migrate-v2.js
 import { Pool, neonConfig } from '@neondatabase/serverless';
 
-neonConfig.webSocketConstructor = WebSocket; // Node 18+/24 native WebSocket
+neonConfig.webSocketConstructor = WebSocket as any; // Node 18+/24 native WebSocket
 
 const url = process.env.DATABASE_URL;
 if (!url) { console.error('DATABASE_URL is not set'); process.exit(1); }
@@ -20,7 +20,7 @@ try {
     if (mem.length) continue; // already migrated
 
     const workspaces = (st.data && st.data.workspaces) || {};
-    const entries = Object.values(workspaces);
+    const entries: any[] = Object.values(workspaces);
     if (!entries.length) continue;
 
     for (const w of entries) {

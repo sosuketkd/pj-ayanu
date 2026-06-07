@@ -21,8 +21,9 @@
 | 層 | 採用技術 |
 |----|----------|
 | フロント | `public/`（`index.html` + `styles.css` + `app.js`、バニラ JS、ビルド工程なし） |
-| API | [Hono](https://hono.dev/) 4.x（`src/app.js` がルートを束ね、`src/routes/*` に分割） |
-| 実行環境 | Vercel（本番、`api/index.js`）/ ローカルは `@hono/node-server`（`src/server.js`） |
+| バックエンド言語 | **TypeScript**（`tsconfig.json` で strict。ローカル実行は `tsx`、本番は Vercel が自動コンパイル） |
+| API | [Hono](https://hono.dev/) 4.x（`src/app.ts` がルートを束ね、`src/routes/*` に分割） |
+| 実行環境 | Vercel（本番、`api/index.ts`）/ ローカルは `@hono/node-server`（`src/server.ts` を `tsx` で実行） |
 | DB | [Neon](https://neon.tech/) サーバーレス Postgres（`@neondatabase/serverless`） |
 | 認証 | メール/パスワード。`bcryptjs` でハッシュ化、JWT（`hono/jwt`, HS256）を httpOnly Cookie に保持 |
 
@@ -34,9 +35,9 @@
 ```
 ブラウザ (public/index.html)
   └─ fetch("/api/...") credentials:include
-       ├─ ローカル: src/server.js が静的配信 + Hono API を同一オリジンで提供
-       └─ 本番:    Vercel が public/ を静的配信、/api/* を api/index.js → Hono へ
-            └─ src/app.js (Hono) ─ src/routes/* ─ src/lib/db.js (Neon sql) ─ Neon Postgres
+       ├─ ローカル: src/server.ts が静的配信 + Hono API を同一オリジンで提供
+       └─ 本番:    Vercel が public/ を静的配信、/api/* を api/index.ts → Hono へ
+            └─ src/app.ts (Hono) ─ src/routes/* ─ src/lib/db.ts (Neon sql) ─ Neon Postgres
 ```
 
 ---
@@ -49,31 +50,33 @@ ayanu/
 │   ├── index.html          画面のマークアップ
 │   ├── styles.css          スタイル
 │   └── app.js              フロントのロジック（バニラ JS）
-├── api/index.js            Vercel 用ハンドラ。Hono app を Node (req,res) にブリッジ
+├── api/index.ts            Vercel 用ハンドラ。Hono app を Node (req,res) にブリッジ
 ├── src/
-│   ├── server.js           ローカル開発サーバー（静的配信 + API、ポート3000）
-│   ├── app.js              Hono アプリ本体。ルートを束ねる
+│   ├── server.ts           ローカル開発サーバー（静的配信 + API、ポート3000）
+│   ├── app.ts              Hono アプリ本体。ルートを束ねる
+│   ├── types.ts            共有型（Hono の Variables = userId / email）
 │   ├── middleware/
-│   │   └── auth.js         requireUser（ログイン必須ゲート）/ setAuthCookie
+│   │   └── auth.ts         requireUser（ログイン必須ゲート）/ setAuthCookie
 │   ├── routes/
-│   │   ├── auth.js         signup / login / logout / me
-│   │   ├── workspaces.js   ワークスペース CRUD + 内容（日報＋AfterCheck）
-│   │   ├── members.js      メンバーのロール変更 / 削除・退出
-│   │   └── invites.js      メール招待 / 招待リンク / 参加
+│   │   ├── auth.ts         signup / login / logout / me
+│   │   ├── workspaces.ts   ワークスペース CRUD + 内容（日報＋AfterCheck）
+│   │   ├── members.ts      メンバーのロール変更 / 削除・退出
+│   │   └── invites.ts      メール招待 / 招待リンク / 参加
 │   ├── lib/
-│   │   ├── auth.js         パスワードハッシュ / JWT 発行・検証 / Cookie 寿命
-│   │   ├── db.js           Neon sql クライアント（テスト時は pg にフォールバック）
-│   │   └── email.js        招待メール送信（Resend HTTP API）
-│   └── utils.js            共通ヘルパ（atLeast / validEmail / membership / baseUrl）
+│   │   ├── auth.ts         パスワードハッシュ / JWT 発行・検証 / Cookie 寿命
+│   │   ├── db.ts           Neon sql クライアント（テスト時は pg にフォールバック）
+│   │   └── email.ts        招待メール送信（Resend HTTP API）
+│   └── utils.ts            共通ヘルパ（atLeast / validEmail / membership / baseUrl）
 ├── db/
 │   └── schema.sql          DB スキーマ（DDL）
 ├── scripts/
-│   ├── setup-db.js         schema.sql を流してテーブル作成（npm run db:setup）
-│   └── migrate-v2.js       v1 の app_state を v2 ワークスペースへ移行（冪等、npm run db:migrate）
+│   ├── setup-db.ts         schema.sql を流してテーブル作成（npm run db:setup）
+│   └── migrate-v2.ts       v1 の app_state を v2 ワークスペースへ移行（冪等、npm run db:migrate）
 ├── docs/
 │   ├── SPEC.md             本書（現状仕様）
 │   ├── note.txt            旧・簡易仕様メモ（※現状とずれあり。9.1 参照）
 │   └── todo.txt            未実装の要望リスト（9.2 参照）
+├── tsconfig.json           TypeScript 設定（strict / NodeNext）
 └── .env / .env.example     DATABASE_URL, JWT_SECRET ほか
 ```
 
@@ -231,7 +234,8 @@ cp .env.example .env          # DATABASE_URL と JWT_SECRET を記入
 export $(grep -v '^#' .env | xargs)
 npm run db:setup              # テーブル作成
 npm run db:migrate            # （任意）v1 データを移行・冪等
-npm run dev                   # http://localhost:3000 （src/server.js、Vercel CLI 不要）
+npm run dev                   # http://localhost:3000 （tsx で src/server.ts、Vercel CLI 不要）
+npm run typecheck             # 型チェック（tsc --noEmit）
 ```
 
 環境変数:
@@ -245,8 +249,8 @@ vercel            # 初回リンク
 # Project Settings → Environment Variables に DATABASE_URL / JWT_SECRET を登録
 vercel --prod
 ```
-`api/index.js` は Vercel の **Node.js ランタイム**で動作（bcryptjs のため）。
-Vercel の Node ランタイムはリクエストボディを事前パースするため、`api/index.js` は
+`api/index.ts` は Vercel の **Node.js ランタイム**で動作（bcryptjs のため。TypeScript は Vercel が自動コンパイル）。
+Vercel の Node ランタイムはリクエストボディを事前パースするため、`api/index.ts` は
 パース済みの `req.body` から Web `Request` を組み立てて Hono にブリッジしている。
 
 ---

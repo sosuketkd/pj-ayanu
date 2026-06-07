@@ -3,8 +3,9 @@ import { Hono } from 'hono';
 import { sql } from '../lib/db.js';
 import { requireUser } from '../middleware/auth.js';
 import { atLeast, membership } from '../utils.js';
+import type { AppEnv } from '../types.js';
 
-const router = new Hono();
+const router = new Hono<AppEnv>();
 
 // list my workspaces + pending email invites
 router.get('/workspaces', requireUser, async (c) => {
@@ -40,7 +41,7 @@ router.post('/workspaces', requireUser, async (c) => {
 
 // workspace detail: members, my role, invite link + pending invites (admins only see invites/link)
 router.get('/workspaces/:id', requireUser, async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   const role = await membership(id, c.get('userId'));
   if (!role) return c.json({ error: 'アクセス権がありません' }, 403);
   const wr = await sql`select id, name, kind, invite_token, invite_role from workspaces where id = ${id}`;
@@ -61,7 +62,7 @@ router.get('/workspaces/:id', requireUser, async (c) => {
 });
 
 router.patch('/workspaces/:id', requireUser, async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   if (!atLeast(await membership(id, c.get('userId')), 'admin')) return c.json({ error: '権限がありません' }, 403);
   const { name } = await c.req.json().catch(() => ({}));
   if (name && name.trim()) await sql`update workspaces set name = ${name.trim()} where id = ${id}`;
@@ -69,7 +70,7 @@ router.patch('/workspaces/:id', requireUser, async (c) => {
 });
 
 router.delete('/workspaces/:id', requireUser, async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   if ((await membership(id, c.get('userId'))) !== 'owner') return c.json({ error: 'オーナーのみ削除できます' }, 403);
   await sql`delete from workspaces where id = ${id}`;
   return c.json({ ok: true });
@@ -77,14 +78,14 @@ router.delete('/workspaces/:id', requireUser, async (c) => {
 
 // workspace content (tickets + AfterCheck), stored as a single JSON blob
 router.get('/workspaces/:id/data', requireUser, async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   if (!(await membership(id, c.get('userId')))) return c.json({ error: 'アクセス権がありません' }, 403);
   const r = await sql`select data from workspace_data where workspace_id = ${id}`;
   return c.json({ data: r.length ? r[0].data : {} });
 });
 
 router.put('/workspaces/:id/data', requireUser, async (c) => {
-  const id = c.req.param('id');
+  const id = c.req.param('id')!;
   if (!(await membership(id, c.get('userId')))) return c.json({ error: 'アクセス権がありません' }, 403);
   const body = await c.req.json().catch(() => ({}));
   const data = body && body.data && typeof body.data === 'object' ? body.data : {};
