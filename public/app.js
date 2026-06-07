@@ -450,6 +450,62 @@ function renderShare(d){
   }
 }
 
+/* ---------------- Account settings ---------------- */
+function closeAccount(){ document.getElementById("accountOverlay").classList.remove("open"); }
+async function openAccount(){
+  try{ renderAccount(await api("/account")); document.getElementById("accountOverlay").classList.add("open"); }
+  catch(e){ alert("アカウント情報の取得に失敗しました: "+e.message); }
+}
+function renderAccount(a){
+  const card=document.getElementById("accountCard");
+  card.innerHTML="";
+  const notif = a.notifications || {};
+  const handleSet = !!a.handle;
+
+  const emailInput  = el("input",{type:"email", class:"share-input", value:a.email||""});
+  const nameInput   = el("input",{type:"text",  class:"share-input", value:a.username||"", maxlength:"50", placeholder:"表示名"});
+  const handleInput = el("input",{type:"text",  class:"share-input", value:a.handle||"", placeholder:"半角英数字・_ 3〜20文字"});
+  if(handleSet) handleInput.disabled=true;
+  const cbInvites = el("input",{type:"checkbox"}); cbInvites.checked = notif.emailInvites !== false;
+  const cbUpdates = el("input",{type:"checkbox"}); cbUpdates.checked = !!notif.emailUpdates;
+
+  const err = el("div",{class:"auth-error"});
+  const saveBtn = el("button",{class:"btn btn-primary", text:"保存"});
+  saveBtn.onclick=async ()=>{
+    err.textContent=""; saveBtn.disabled=true;
+    const payload={
+      email: emailInput.value.trim(),
+      username: nameInput.value.trim(),
+      notifications: { emailInvites: cbInvites.checked, emailUpdates: cbUpdates.checked },
+    };
+    if(!handleSet) payload.handle = handleInput.value.trim();
+    try{
+      const r=await api("/account",{method:"PATCH",body:payload});
+      currentUserEmail=r.email;
+      document.getElementById("userEmail").textContent = r.username || r.email;
+      renderAccount(r);   // re-render (handle now locked, fields normalized)
+    }catch(e){ err.textContent=e.message; }
+    finally{ saveBtn.disabled=false; }
+  };
+
+  card.append(
+    el("div",{class:"share-head"},
+      el("strong",{text:"アカウント設定"}),
+      el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeAccount})),
+    el("div",{class:"acc-field"}, el("label",{text:"メールアドレス"}), emailInput),
+    el("div",{class:"acc-field"}, el("label",{text:"ユーザーネーム"}), nameInput),
+    el("div",{class:"acc-field"},
+      el("label",{text:"ユーザーID"+(handleSet?"（変更不可）":"（設定後は変更できません）")}),
+      handleInput),
+    el("div",{class:"share-section-title", text:"通知設定"}),
+    el("label",{class:"acc-check"}, cbInvites, el("span",{text:"ワークスペースへの招待メールを受け取る"})),
+    el("label",{class:"acc-check"}, cbUpdates, el("span",{text:"お知らせ・更新のメールを受け取る"})),
+    err,
+    el("div",{class:"acc-actions"}, saveBtn)
+  );
+}
+document.getElementById("accountBtn").onclick=openAccount;
+
 /* drawer open/close */
 const wsDrawerEl=document.getElementById("wsDrawer");
 const wsOverlayEl=document.getElementById("wsOverlay");
@@ -849,6 +905,7 @@ async function processInviteFromURL(){
 async function afterLogin(){
   showAuth(false); showApp(true);
   document.getElementById("userEmail").textContent=currentUserEmail;
+  try{ const a=await api("/account"); if(a.username) document.getElementById("userEmail").textContent=a.username; }catch(_){}
 
   await processInviteFromURL();
   await refreshWorkspaces();

@@ -40,10 +40,11 @@ cp .env.example .env        # DATABASE_URL と JWT_SECRET を記入
 ### DB のテーブルを作成
 
 ```bash
-export $(grep -v '^#' .env | xargs)   # .env を読み込む（zsh/bash）
-npm run db:setup                      # テーブル作成（既存 + 共有用テーブル）
-npm run db:migrate                    # v1 の既存データを共有モデルへ移行（任意・冪等）
+npm run db:setup     # テーブル作成 / カラム追加（冪等。.env を自動読込）
+npm run db:migrate   # v1 の既存データを共有モデルへ移行（任意・冪等）
 ```
+
+> 各スクリプトは `.env`（`DATABASE_URL`）を自動で読み込みます（`--env-file-if-exists`）。
 
 > `db:migrate` は旧 `app_state`（1ユーザー=1ブロック）に入っていたデータを、
 > 各ユーザーが所有する個人ワークスペースへ展開します。既に移行済みのユーザーはスキップされます。
@@ -79,7 +80,7 @@ vercel --prod
 
 ## データ構造
 
-- `users` … アカウント
+- `users` … アカウント（メール / 表示名 `username` / 公開ユーザーID `handle`〔設定後不変〕 / 通知設定 `notifications`）
 - `workspaces` … 共有可能なコンテナ（個人/チーム、招待リンク token を保持）
 - `workspace_members` … 誰がどのワークスペースに、どのロールで所属するか
 - `workspace_data` … そのワークスペースの日報＋AfterCheck（JSONB）
@@ -95,6 +96,7 @@ vercel --prod
 |--------|------|------|
 | POST | `/api/auth/signup` / `login` / `logout` | 認証 |
 | GET  | `/api/auth/me` | ログイン中ユーザー |
+| GET/PATCH | `/api/account` | アカウント設定（メール / 表示名 / ユーザーID / 通知設定）の取得・更新 |
 | GET  | `/api/workspaces` | 自分のワークスペース一覧＋保留中の招待 |
 | POST | `/api/workspaces` | 作成（`{name, kind}`、作成者がオーナー） |
 | GET/PATCH/DELETE | `/api/workspaces/:id` | 詳細（メンバー等）/ 改名 / 削除 |

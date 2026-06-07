@@ -25,17 +25,22 @@ router.post('/workspaces/:id/invites', requireUser, async (c) => {
     insert into invitations (workspace_id, email, role, token, invited_by)
     values (${id}, ${mail}, ${r}, ${token}, ${c.get('userId')})`;
 
-  // send the invitation email (best-effort: don't fail the request if it can't send)
+  // send the invitation email (best-effort: don't fail the request if it can't send).
+  // Respect the invitee's preference if they already have an account.
   const wr = await sql`select name from workspaces where id = ${id}`;
+  const pref = await sql`select notifications from users where lower(email) = ${mail}`;
+  const wantsEmail = !pref.length || pref[0].notifications?.emailInvites !== false;
   const acceptUrl = `${baseUrl(c)}/?invite=${token}`;
   let emailSent = false;
-  try {
-    const res = await sendInviteEmail({
-      to: mail, workspaceName: wr[0]?.name || 'ワークスペース',
-      acceptUrl, role: r, inviter: c.get('email'),
-    });
-    emailSent = !!res.sent;
-  } catch (e) { console.error(e); }
+  if (wantsEmail) {
+    try {
+      const res = await sendInviteEmail({
+        to: mail, workspaceName: wr[0]?.name || 'ワークスペース',
+        acceptUrl, role: r, inviter: c.get('email'),
+      });
+      emailSent = !!res.sent;
+    } catch (e) { console.error(e); }
+  }
 
   return c.json({ ok: true, token, email: mail, role: r, emailSent });
 });

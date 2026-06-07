@@ -4,3 +4,6 @@ node_modules
 .vercel
 .DS_Store
 .claude/settings.local.json
+
+docs/todo.txt
+docs/note.txt
