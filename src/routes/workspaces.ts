@@ -35,7 +35,7 @@ router.post('/workspaces', requireUser, async (c) => {
     returning id, name, kind`;
   const w = wr[0];
   await sql`insert into workspace_members (workspace_id, user_id, role) values (${w.id}, ${c.get('userId')}, 'owner')`;
-  await sql`insert into workspace_data (workspace_id, data) values (${w.id}, '{}'::jsonb)`;
+  await sql`insert into member_data (workspace_id, user_id, data) values (${w.id}, ${c.get('userId')}, '{}'::jsonb)`;
   return c.json({ id: w.id, name: w.name, kind: w.kind, role: 'owner', member_count: 1 });
 });
 
@@ -76,11 +76,11 @@ router.delete('/workspaces/:id', requireUser, async (c) => {
   return c.json({ ok: true });
 });
 
-// workspace content (tickets + AfterCheck), stored as a single JSON blob
+// the caller's OWN content (tickets + AfterCheck) in this workspace
 router.get('/workspaces/:id/data', requireUser, async (c) => {
   const id = c.req.param('id')!;
   if (!(await membership(id, c.get('userId')))) return c.json({ error: 'アクセス権がありません' }, 403);
-  const r = await sql`select data from workspace_data where workspace_id = ${id}`;
+  const r = await sql`select data from member_data where workspace_id = ${id} and user_id = ${c.get('userId')}`;
   return c.json({ data: r.length ? r[0].data : {} });
 });
 
@@ -90,10 +90,37 @@ router.put('/workspaces/:id/data', requireUser, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const data = body && body.data && typeof body.data === 'object' ? body.data : {};
   await sql`
-    insert into workspace_data (workspace_id, data, updated_at)
-    values (${id}, ${JSON.stringify(data)}::jsonb, now())
-    on conflict (workspace_id) do update set data = excluded.data, updated_at = now()`;
+    insert into member_data (workspace_id, user_id, data, updated_at)
+    values (${id}, ${c.get('userId')}, ${JSON.stringify(data)}::jsonb, now())
+    on conflict (workspace_id, user_id) do update set data = excluded.data, updated_at = now()`;
   return c.json({ ok: true });
+});
+
+// admin oversight: every member's TD in this workspace (read-only dashboard source)
+router.get('/workspaces/:id/overview', requireUser, async (c) => {
+  const id = c.req.param('id')!;
+  if (!atLeast(await membership(id, c.get('userId')), 'admin')) return c.json({ error: '権限がありません' }, 403);
+  const members = await sql`
+    select u.id, u.email, u.username, m.role,
+      coalesce(d.data, '{}'::jsonb) as data, d.updated_at
+    from workspace_members m
+    join users u on u.id = m.user_id
+    left join member_data d on d.workspace_id = m.workspace_id and d.user_id = m.user_id
+    where m.workspace_id = ${id}
+    order by case m.role when 'owner' then 0 when 'admin' then 1 else 2 end, u.email`;
+  return c.json({ members });
+});
+
+// aggregate: the caller's own TD across every workspace they belong to (read-only)
+router.get('/aggregate', requireUser, async (c) => {
+  const uid = c.get('userId');
+  const workspaces = await sql`
+    select w.id, w.name, w.kind, coalesce(d.data, '{}'::jsonb) as data
+    from workspaces w
+    join workspace_members m on m.workspace_id = w.id and m.user_id = ${uid}
+    left join member_data d on d.workspace_id = w.id and d.user_id = ${uid}
+    order by w.kind, w.created_at`;
+  return c.json({ workspaces });
 });
 
 export default router;

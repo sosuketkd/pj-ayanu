@@ -99,7 +99,8 @@ vercel --prod
 - `oauth_accounts` … ソーシャルログインのアイデンティティ（`provider` + `provider_user_id` → `user_id`）
 - `workspaces` … 共有可能なコンテナ（個人/チーム、招待リンク token を保持）
 - `workspace_members` … 誰がどのワークスペースに、どのロールで所属するか
-- `workspace_data` … そのワークスペースの日報＋AfterCheck（JSONB）
+- `member_data` … 各メンバーがそのワークスペースに持つ日報＋AfterCheck（JSONB、PK=`workspace_id,user_id`）。チームは1人1TD、管理者が全員分を閲覧
+- `workspace_data` … v1.5 の共有ブロブ（`member_data` への移行元としてのみ残存）
 - `invitations` … メール招待（single-use）
 - `app_state` … v1 の名残（移行元としてのみ保持）
 
@@ -119,7 +120,9 @@ vercel --prod
 | GET  | `/api/workspaces` | 自分のワークスペース一覧＋保留中の招待 |
 | POST | `/api/workspaces` | 作成（`{name, kind}`、作成者がオーナー） |
 | GET/PATCH/DELETE | `/api/workspaces/:id` | 詳細（メンバー等）/ 改名 / 削除 |
-| GET/PUT | `/api/workspaces/:id/data` | 日報＋AfterCheck の取得 / 保存 |
+| GET/PUT | `/api/workspaces/:id/data` | 自分の日報＋AfterCheck の取得 / 保存（メンバー毎） |
+| GET | `/api/workspaces/:id/overview` | チーム全メンバーのTD状況（管理者のみ・読み取り） |
+| GET | `/api/aggregate` | 自分の全ワークスペースのTDを合算（全体混合・読み取り） |
 | PATCH/DELETE | `/api/workspaces/:id/members/:userId` | ロール変更 / 削除・退出 |
 | POST/DELETE | `/api/workspaces/:id/invites[/:inviteId]` | メール招待 作成 / 取消 |
 | POST | `/api/invites/:token/accept` / `decline` | 招待の承諾 / 辞退 |

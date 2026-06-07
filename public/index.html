@@ -39,6 +39,7 @@
     <input type="date" id="datePicker">
     <button id="nextDay" title="次の日">›</button>
     <button id="todayBtn" class="btn">今日</button>
+    <button id="overviewBtn" class="btn" title="メンバーのTD状況" style="display:none">👥 メンバー状況</button>
     <button id="reportBtn" class="btn" title="レポートを表示">📊 レポート</button>
   </div>
   <div class="user-area" id="userArea" style="display:none">
@@ -83,7 +84,7 @@
   <div class="share-card report-card" id="reportCard"></div>
 </div>
 
-<main style="display:none">
+<main id="editMain" style="display:none">
   <!-- DATE LIST -->
   <section class="panel">
     <div class="panel-head">
@@ -126,6 +127,12 @@
     </div>
   </section>
 </main>
+
+<!-- 全体混合（自分の全TDを合算した読み取り専用ビュー） -->
+<div id="aggregateView" class="readonly-view" style="display:none"></div>
+
+<!-- メンバー状況（チーム管理者向けの読み取り専用ダッシュボード） -->
+<div id="overviewView" class="readonly-view" style="display:none"></div>
 
 <script src="app.js"></script>
 </body>

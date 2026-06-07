@@ -28,8 +28,10 @@
 | 認証 | メール/パスワード。`bcryptjs` でハッシュ化、JWT（`hono/jwt`, HS256）を httpOnly Cookie に保持 |
 
 **設計方針**: ビルド工程のないバニラJSフロントをほぼそのまま使うため、各ワークスペースの中身
-（チケット群 + AfterCheck）を 1 つの JSONB（`workspace_data.data`）として丸ごと保存する
-「JSON ブロブ / ワークスペース」方式。タスク単位の検索・共有が必要になったら正規化（tickets/tasks テーブル）へ移行する想定。
+（チケット群 + AfterCheck）を JSONB として保存する「JSON ブロブ」方式。**メンバー毎**に
+1 行（`member_data`, PK=`workspace_id,user_id`）持ち、チームでは各自が自分の TD を編集、
+管理者は `/overview` で全員分を読み取り（閲覧のみ）。「全体混合」は自分の全 WS の TD を
+`/aggregate` で合算した読み取りビュー。タスク単位の検索が必要になれば正規化へ移行する想定。
 
 ### リクエストの流れ
 ```
@@ -92,7 +94,8 @@ ayanu/
 | `oauth_accounts` | ソーシャルログインのアイデンティティ | PK=`(provider, provider_user_id)`, `user_id→users` |
 | `workspaces` | 共有可能なコンテナ | `id`, `name`, `kind('personal'\|'team')`, `created_by`, `invite_token(unique, null=無効)`, `invite_role` |
 | `workspace_members` | 所属とロール | PK=`(workspace_id, user_id)`, `role('owner'\|'admin'\|'member')`, `joined_at` |
-| `workspace_data` | ワークスペースの中身 | PK=`workspace_id`, `data(jsonb)`, `updated_at` |
+| `member_data` | **メンバー毎**の中身（日報＋AfterCheck） | PK=`(workspace_id, user_id)`, `data(jsonb)`, `updated_at` |
+| `workspace_data` | v1.5 の共有ブロブ（`member_data` への移行元としてのみ保持） | PK=`workspace_id`, `data(jsonb)` |
 | `invitations` | メール招待（単回使用） | `id`, `workspace_id`, `email`, `role`, `token(unique)`, `invited_by`, `accepted_at` |
 | `app_state` | **v1 の名残**（移行元としてのみ保持） | PK=`user_id`, `data(jsonb)` |
 
@@ -213,8 +216,10 @@ ayanu/
 | GET | `/workspaces/:id` | 詳細（メンバー/自ロール/招待リンク/保留招待） | メンバー |
 | PATCH | `/workspaces/:id` | 改名（`{name}`） | admin+ |
 | DELETE | `/workspaces/:id` | 削除 | owner |
-| GET | `/workspaces/:id/data` | 中身(JSON)取得 | メンバー |
-| PUT | `/workspaces/:id/data` | 中身(JSON)保存（upsert） | メンバー |
+| GET | `/workspaces/:id/data` | **自分の**中身(JSON)取得（メンバー毎） | メンバー |
+| PUT | `/workspaces/:id/data` | **自分の**中身(JSON)保存（upsert） | メンバー |
+| GET | `/workspaces/:id/overview` | チーム全メンバーのTD（管理ダッシュボード源、読み取り） | admin+ |
+| GET | `/aggregate` | 自分の全ワークスペースのTDを合算（全体混合、読み取り） | 要ログイン |
 | PATCH | `/workspaces/:id/members/:userId` | ロール変更（`{role}`） | admin+ |
 | DELETE | `/workspaces/:id/members/:userId` | メンバー削除 / 自身の退出 | admin+ or 本人 |
 | POST | `/workspaces/:id/invites` | メール招待作成（`{email, role}`） | admin+ |

@@ -55,12 +55,31 @@ create table if not exists workspace_members (
 );
 create index if not exists workspace_members_user_idx on workspace_members(user_id);
 
--- The actual content (tickets + AfterCheck) of a workspace, stored as JSON.
+-- v1.5 storage: one shared blob per workspace. Superseded by member_data below
+-- (kept only as a migration source).
 create table if not exists workspace_data (
   workspace_id uuid primary key references workspaces(id) on delete cascade,
   data         jsonb not null default '{}'::jsonb,
   updated_at   timestamptz not null default now()
 );
+
+-- Per-member content (tickets + AfterCheck). Each member keeps their OWN TD in a
+-- workspace; team admins can read everyone's (oversight). Personal workspaces just
+-- have the single owner row.
+create table if not exists member_data (
+  workspace_id uuid references workspaces(id) on delete cascade,
+  user_id      uuid references users(id) on delete cascade,
+  data         jsonb not null default '{}'::jsonb,
+  updated_at   timestamptz not null default now(),
+  primary key (workspace_id, user_id)
+);
+
+-- Migrate the old shared blob to the workspace owner (idempotent).
+insert into member_data (workspace_id, user_id, data)
+select wd.workspace_id, w.created_by, wd.data
+from workspace_data wd join workspaces w on w.id = wd.workspace_id
+where w.created_by is not null
+on conflict (workspace_id, user_id) do nothing;
 
 -- Pending email invitations (single-use, accepted by the matching logged-in user).
 create table if not exists invitations (

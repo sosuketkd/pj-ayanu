@@ -12,6 +12,11 @@ let currentWsId = null;   // selected workspace
 let data = emptyData();   // content of the current workspace: {tickets, ac}
 let pendingSelectWs = null; // workspace to open after processing an invite/join link
 
+let viewMode = "edit";          // "edit" | "aggregate" | "overview"
+const AGG_ID = "__aggregate__"; // sentinel id for the combined "全体混合" view
+let aggData = null;             // { workspaces:[{id,name,kind,data}] } for aggregate
+let overviewData = null;        // { members:[{id,email,username,role,data}] } for overview
+
 function emptyData(){ return { tickets:{}, ac:[] }; }
 function normalizeData(d){
   if(!d || typeof d!=="object") d={};
@@ -41,7 +46,7 @@ function setSyncStatus(s){
 }
 /* Called by the app on every change. */
 function save(){
-  if(!currentWsId) return;
+  if(!currentWsId || viewMode!=="edit" || currentWsId===AGG_ID) return; // read-only modes don't persist
   try{ localStorage.setItem(CACHE_KEY+":"+currentWsId, JSON.stringify(data)); }catch(_){}
   if(!currentUserEmail) return;
   dirty=true; setSyncStatus("saving");
@@ -232,9 +237,18 @@ function el(tag, props={}, ...kids){
 
 function renderWorkspaces(){
   const cur=curWs();
-  document.getElementById("wsCurrent").textContent = cur ? cur.name : "—";
+  document.getElementById("wsCurrent").textContent =
+      viewMode==="aggregate" ? "全体混合"
+    : viewMode==="overview"  ? ((cur?cur.name:"")+"（メンバー状況）")
+    : (cur ? cur.name : "—");
   const list=document.getElementById("wsList");
   list.innerHTML="";
+
+  // combined view across all of my workspaces
+  list.appendChild(el("li",{class:"ws-aggregate"+(currentWsId===AGG_ID?" active":"")},
+    el("span",{class:"ws-dot"}),
+    el("span",{class:"ws-li-name", text:"📋 全体混合", onClick:openAggregate})
+  ));
 
   // pending invitations
   if(pendingInvites.length){
@@ -253,13 +267,13 @@ function renderWorkspaces(){
     });
   }
 
-  [["personal","個人"],["team","チーム"]].forEach(([kind,label])=>{
+  [["personal","マイワークスペース"],["team","チーム"]].forEach(([kind,label])=>{
     const items=wsList.filter(w=>w.kind===kind);
     if(!items.length) return;
     list.appendChild(el("div",{class:"ws-group-head"},label));
     items.forEach(w=>{
       const name=el("span",{class:"ws-li-name", text:w.name, onClick:()=>selectWorkspace(w.id)});
-      list.appendChild(el("li",{class:(w.id===currentWsId?"active":"")},
+      list.appendChild(el("li",{class:((w.id===currentWsId && viewMode!=="aggregate")?"active":"")},
         el("span",{class:"ws-dot"}),
         name,
         el("span",{class:"ws-role", text:roleLabel(w.role)}),
@@ -277,11 +291,12 @@ async function refreshWorkspaces(){
 
 /* switch the active workspace */
 async function selectWorkspace(id){
-  if(id===currentWsId){ closeDrawer(); return; }
+  if(id===currentWsId && viewMode==="edit"){ closeDrawer(); return; }
   await flushSave();
   currentWsId=id;
   try{ localStorage.setItem("ayanu.lastWs", id); }catch(_){}
   await loadWorkspaceData();
+  setView("edit"); updateModeButtons();
   closeDrawer();
   currentDate=todayStr(); calYM=currentDate.slice(0,7);
   render(); setSyncStatus("saved");
@@ -294,6 +309,132 @@ async function loadWorkspaceData(){
     data=normalizeData(cached);
   }
 }
+
+/* ---------------- View modes (edit / aggregate / overview) ---------------- */
+function setView(mode){
+  viewMode=mode;
+  document.getElementById("editMain").style.display      = mode==="edit"      ? "" : "none";
+  document.getElementById("aggregateView").style.display = mode==="aggregate" ? "" : "none";
+  document.getElementById("overviewView").style.display  = mode==="overview"  ? "" : "none";
+  document.getElementById("reportBtn").style.display     = mode==="edit"      ? "" : "none";
+}
+/* The "👥 メンバー状況" button shows only for a team you administer, in edit mode. */
+function updateModeButtons(){
+  const cur=curWs();
+  const isTeamAdmin = !!cur && cur.kind==="team" && (cur.role==="admin"||cur.role==="owner");
+  document.getElementById("overviewBtn").style.display = (viewMode==="edit" && isTeamAdmin) ? "" : "none";
+}
+/* Re-render whatever view is active (used when the date changes). */
+function rerender(){
+  if(viewMode==="aggregate") renderAggregate();
+  else if(viewMode==="overview") renderOverview();
+  else render();
+}
+
+/* ---- read-only helpers shared by aggregate + overview ---- */
+function dayTasks(d, date){
+  const t = d && d.tickets && d.tickets[date];
+  return (t && Array.isArray(t.tasks)) ? t.tasks : [];
+}
+function dayStats(d, date){
+  let total=0, done=0;
+  (function walk(arr){ (arr||[]).forEach(x=>{ total++; if(x.done) done++; walk(x.children); }); })(dayTasks(d,date));
+  return { total, done };
+}
+function roAppendTasks(ul, tasks, depth){
+  (tasks||[]).forEach(t=>{
+    const li=el("li",{class:"ro-task"+(t.done?" done":"")+(t.prio==="semi"?" semi":"")},
+      el("span",{class:"ro-check", text:t.done?"☑":"☐"}),
+      el("span",{class:"ro-text", text:t.text||"（無題）"}),
+      t.est ? el("span",{class:"ro-est", text:t.est+"h"}) : null
+    );
+    li.style.paddingLeft=(10+(depth||0)*16)+"px";
+    ul.appendChild(li);
+    if(Array.isArray(t.children) && t.children.length) roAppendTasks(ul, t.children, (depth||0)+1);
+  });
+}
+
+/* ---- 全体混合: my own TD across every workspace, read-only ---- */
+async function openAggregate(){
+  if(currentWsId===AGG_ID && viewMode==="aggregate"){ closeDrawer(); return; }
+  await flushSave();
+  currentWsId=AGG_ID;
+  try{ localStorage.setItem("ayanu.lastWs", AGG_ID); }catch(_){}
+  try{ aggData=await api("/aggregate"); }catch(_){ aggData={workspaces:[]}; }
+  setView("aggregate"); updateModeButtons(); closeDrawer();
+  currentDate=todayStr(); calYM=currentDate.slice(0,7);
+  renderAggregate();
+}
+function renderAggregate(){
+  renderWorkspaces();
+  document.getElementById("datePicker").value=currentDate;
+  const root=document.getElementById("aggregateView"); root.innerHTML="";
+  root.appendChild(el("div",{class:"ro-head"},
+    el("h2",{text:"📋 全体混合"}),
+    el("span",{class:"ro-sub", text:fmtDate(currentDate)+" の自分のTD（全ワークスペース）"})
+  ));
+  let any=false;
+  ((aggData&&aggData.workspaces)||[]).forEach(w=>{
+    const d=normalizeData(w.data);
+    const tasks=dayTasks(d,currentDate);
+    if(!tasks.length) return;
+    any=true;
+    const st=dayStats(d,currentDate);
+    const ul=el("ul",{class:"ro-tasks"}); roAppendTasks(ul, tasks, 0);
+    root.appendChild(el("div",{class:"ro-card"},
+      el("div",{class:"ro-card-head"},
+        el("span",{class:"ro-ws-name", text:w.name}),
+        el("span",{class:"ro-badge "+w.kind, text: w.kind==="team"?"チーム":"個人"}),
+        el("span",{class:"ro-prog", text: st.done+"/"+st.total})
+      ), ul));
+  });
+  if(!any) root.appendChild(el("div",{class:"ro-empty", text:"この日のタスクはありません。"}));
+}
+
+/* ---- メンバー状況: team admin oversight dashboard, read-only ---- */
+async function openOverview(){
+  if(!currentWsId || currentWsId===AGG_ID) return;
+  await flushSave();
+  try{ overviewData=await api("/workspaces/"+currentWsId+"/overview"); }
+  catch(e){ alert(e.message); return; }
+  setView("overview"); updateModeButtons();
+  renderOverview();
+}
+function renderOverview(){
+  renderWorkspaces();
+  document.getElementById("datePicker").value=currentDate;
+  const root=document.getElementById("overviewView"); root.innerHTML="";
+  root.appendChild(el("div",{class:"ro-head"},
+    el("button",{class:"btn", text:"← 自分のTDに戻る", onClick:backToEdit}),
+    el("h2",{text:"👥 メンバー状況"}),
+    el("span",{class:"ro-sub", text:fmtDate(currentDate)})
+  ));
+  const members=(overviewData&&overviewData.members)||[];
+  members.forEach(m=>{
+    const d=normalizeData(m.data);
+    const st=dayStats(d,currentDate);
+    const pct = st.total ? Math.round(st.done/st.total*100) : 0;
+    const ul=el("ul",{class:"ro-tasks"}); ul.style.display="none";
+    const tasks=dayTasks(d,currentDate);
+    if(tasks.length) roAppendTasks(ul, tasks, 0);
+    else ul.appendChild(el("li",{class:"ro-empty", text:"この日のタスクはありません。"}));
+    const head=el("div",{class:"ro-card-head ov-row"},
+      el("span",{class:"ov-name", text:(m.username||m.email)}),
+      el("span",{class:"ws-role", text:roleLabel(m.role)}),
+      el("span",{class:"ov-prog", text: st.done+"/"+st.total+"（"+pct+"%）"})
+    );
+    head.style.cursor="pointer";
+    head.onclick=()=>{ ul.style.display = ul.style.display==="none" ? "" : "none"; };
+    const fill=el("div",{class:"ov-bar-fill"}); fill.style.width=pct+"%";
+    root.appendChild(el("div",{class:"ro-card"}, head, el("div",{class:"ov-bar"}, fill), ul));
+  });
+  if(!members.length) root.appendChild(el("div",{class:"ro-empty", text:"メンバーがいません。"}));
+}
+async function backToEdit(){
+  setView("edit"); updateModeButtons();
+  await loadWorkspaceData(); render(); setSyncStatus("saved");
+}
+document.getElementById("overviewBtn").onclick=openOverview;
 
 /* create a new workspace */
 async function createWorkspace(){
@@ -839,18 +980,19 @@ function shiftDate(delta){
   const d=new Date(currentDate+"T00:00:00");
   d.setDate(d.getDate()+delta);
   currentDate=isoOf(d); calYM=currentDate.slice(0,7);
-  render();
+  rerender();
 }
 document.getElementById("prevDay").onclick=()=>shiftDate(-1);
 document.getElementById("nextDay").onclick=()=>shiftDate(1);
-document.getElementById("todayBtn").onclick=()=>{ currentDate=todayStr(); calYM=currentDate.slice(0,7); render(); };
-document.getElementById("datePicker").onchange=e=>{ currentDate=e.target.value||todayStr(); calYM=currentDate.slice(0,7); render(); };
+document.getElementById("todayBtn").onclick=()=>{ currentDate=todayStr(); calYM=currentDate.slice(0,7); rerender(); };
+document.getElementById("datePicker").onchange=e=>{ currentDate=e.target.value||todayStr(); calYM=currentDate.slice(0,7); rerender(); };
 
 /* ---------------- Auth UI ---------------- */
 let authMode="login";   // "login" | "signup"
 function showAuth(show){ document.getElementById("authOverlay").style.display = show?"flex":"none"; }
 function showApp(show){
-  document.querySelector("main").style.display = show?"":"none";
+  if(show){ setView(viewMode); }
+  else{ ["editMain","aggregateView","overviewView"].forEach(id=>{ document.getElementById(id).style.display="none"; }); }
   document.getElementById("userArea").style.display = show?"":"none";
 }
 function setAuthMode(mode){
@@ -903,6 +1045,7 @@ async function processInviteFromURL(){
 }
 
 async function afterLogin(){
+  viewMode="edit";
   showAuth(false); showApp(true);
   document.getElementById("userEmail").textContent=currentUserEmail;
   try{ const a=await api("/account"); if(a.username) document.getElementById("userEmail").textContent=a.username; }catch(_){}
@@ -913,6 +1056,7 @@ async function afterLogin(){
     try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; renderWorkspaces(); }catch(_){}
   }
   let last=null; try{ last=localStorage.getItem("ayanu.lastWs"); }catch(_){}
+  if(last===AGG_ID && !pendingSelectWs){ await openAggregate(); return; }   // restore combined view
   currentWsId = (pendingSelectWs && wsList.some(w=>w.id===pendingSelectWs)) ? pendingSelectWs
               : (last && wsList.some(w=>w.id===last)) ? last
               : (wsList[0] && wsList[0].id);
@@ -920,6 +1064,7 @@ async function afterLogin(){
   try{ if(currentWsId) localStorage.setItem("ayanu.lastWs", currentWsId); }catch(_){}
 
   await loadWorkspaceData();
+  setView("edit"); updateModeButtons();
   currentDate=todayStr(); calYM=currentDate.slice(0,7);
   render();
   setSyncStatus("saved");

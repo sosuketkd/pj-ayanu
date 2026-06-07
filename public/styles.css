@@ -173,6 +173,32 @@
   main{display:grid; grid-template-columns:200px 1.4fr 1fr; gap:16px; padding:16px 20px; align-items:start;}
   @media(max-width:1000px){ main{grid-template-columns:1fr;} }
 
+  /* read-only views: 全体混合 / メンバー状況 */
+  .readonly-view{padding:16px 20px; max-width:760px; margin:0 auto;}
+  .ro-head{display:flex; align-items:center; gap:10px; margin-bottom:14px; flex-wrap:wrap;}
+  .ro-head h2{font-size:18px; margin:0;}
+  .ro-sub{font-size:12px; color:var(--muted);}
+  .ro-card{background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:10px 12px; margin-bottom:12px;}
+  .ro-card-head{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+  .ro-ws-name, .ov-name{font-weight:700; font-size:14px;}
+  .ro-badge{font-size:10px; border-radius:5px; padding:1px 6px; flex:none;}
+  .ro-badge.team{background:#eafaf0; color:#15803d;} .ro-badge.personal{background:#f0f2f5; color:var(--muted);}
+  .ro-prog, .ov-prog{margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums;}
+  .ro-tasks{list-style:none; margin:0; padding:0;}
+  .ro-task{display:flex; align-items:flex-start; gap:8px; padding:4px 4px; font-size:13px; border-radius:6px;}
+  .ro-task.semi{background:#fafbfc;}
+  .ro-task.done .ro-text{text-decoration:line-through; color:var(--done);}
+  .ro-check{flex:none; color:var(--muted);}
+  .ro-text{flex:1; min-width:0; white-space:pre-wrap; word-break:break-word;}
+  .ro-est{flex:none; font-size:11px; color:var(--muted);}
+  .ro-empty{color:var(--muted); font-size:13px; padding:8px 4px;}
+  /* overview member rows */
+  .ov-row{cursor:pointer;}
+  .ov-bar{height:6px; border-radius:4px; background:#eef1f4; overflow:hidden; margin:2px 0 8px;}
+  .ov-bar-fill{height:100%; background:var(--accent); transition:width .2s;}
+  /* drawer: combined-view entry */
+  .ws-menu li.ws-aggregate{margin-bottom:2px;}
+
   /* ---- Date list sidebar ---- */
   ul.daylist{list-style:none; margin:0; padding:6px;}
   ul.daylist li{
