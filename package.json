@@ -1,0 +1,17 @@
+{
+  "name": "ayanu",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "dev:vercel": "vercel dev",
+    "db:setup": "node scripts/setup-db.js"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.7",
+    "@neondatabase/serverless": "^0.10.4",
+    "bcryptjs": "^2.4.3",
+    "hono": "^4.6.14"
+  }
+}
