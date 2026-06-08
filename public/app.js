@@ -415,12 +415,54 @@ function roAppendTasks(ul, tasks, depth){
     const li=el("li",{class:"ro-task"+(t.done?" done":"")+(t.prio==="semi"?" semi":"")},
       el("span",{class:"ro-check", text:t.done?"☑":"☐"}),
       el("span",{class:"ro-text", text:t.text||"（無題）"}),
+      (t.prio==="semi") ? el("span",{class:"ro-prio", text:"準"}) : null,
       t.est ? el("span",{class:"ro-est", text:t.est+"h"}) : null
     );
     li.style.paddingLeft=(10+(depth||0)*16)+"px";
     ul.appendChild(li);
+    if(t.comment && String(t.comment).trim()){
+      const memo=el("li",{class:"ro-memo", text:"💬 "+String(t.comment).trim()});
+      memo.style.paddingLeft=(28+(depth||0)*16)+"px";
+      ul.appendChild(memo);
+    }
     if(Array.isArray(t.children) && t.children.length) roAppendTasks(ul, t.children, (depth||0)+1);
   });
+}
+
+/* ---- richer per-member metrics for the overview ---- */
+function dayHours(d, date){
+  let est=0, doneEst=0;
+  (function walk(arr){ (arr||[]).forEach(x=>{ const h=parseFloat(x.est)||0; est+=h; if(x.done) doneEst+=h; walk(x.children); }); })(dayTasks(d,date));
+  return { est:Math.round(est*10)/10, doneEst:Math.round(doneEst*10)/10 };
+}
+function dayPrio(d, date){
+  let top=0, topDone=0, semi=0, semiDone=0;
+  (function walk(arr){ (arr||[]).forEach(x=>{
+    if(x.prio==="semi"){ semi++; if(x.done) semiDone++; } else { top++; if(x.done) topDone++; }
+    walk(x.children);
+  }); })(dayTasks(d,date));
+  return { top, topDone, semi, semiDone };
+}
+function acStats(d){
+  const ac=Array.isArray(d.ac)?d.ac:[];
+  return { total:ac.length, done:ac.filter(x=>x && x.done).length };
+}
+/* the n calendar days ending at `date` (oldest → newest) */
+function recentDays(date, n){
+  const out=[], base=new Date(date+"T00:00:00");
+  for(let i=n-1;i>=0;i--){ const dt=new Date(base); dt.setDate(dt.getDate()-i); out.push(isoOf(dt)); }
+  return out;
+}
+/* "たった今 / x分前 / x時間前 / x日前 / M/D" */
+function relTime(ts){
+  if(!ts) return "未更新";
+  const t=new Date(ts).getTime(); if(isNaN(t)) return "—";
+  const s=Math.max(0,(Date.now()-t)/1000);
+  if(s<60) return "たった今";
+  if(s<3600) return Math.floor(s/60)+"分前";
+  if(s<86400) return Math.floor(s/3600)+"時間前";
+  if(s<86400*7) return Math.floor(s/86400)+"日前";
+  const d=new Date(ts); return (d.getMonth()+1)+"/"+d.getDate();
 }
 
 /* ---- 全体混合: my own TD across every workspace, read-only ---- */
@@ -468,33 +510,107 @@ async function openOverview(){
   setView("overview"); updateModeButtons();
   renderOverview();
 }
+function ovStat(label, val, accent){
+  return el("div",{class:"ov-stat"+(accent?" accent":"")},
+    el("div",{class:"ov-stat-val", text:val}),
+    el("div",{class:"ov-stat-lbl", text:label})
+  );
+}
+function ovChip(label, val, cls){
+  return el("span",{class:"ov-chip"+(cls?" "+cls:"")}, el("b",{text:val}), el("span",{class:"ov-chip-lbl", text:label}));
+}
 function renderOverview(){
   renderWorkspaces();
   const root=document.getElementById("overviewView"); root.innerHTML="";
+  const members=(overviewData&&overviewData.members)||[];
+
   root.appendChild(el("div",{class:"ro-head"},
     el("button",{class:"btn", text:"← 自分のTDに戻る", onClick:backToEdit}),
     el("h2",{text:"👥 メンバー状況"}),
-    el("span",{class:"ro-sub", text:fmtDate(currentDate)})
+    el("span",{class:"ro-sub", text:fmtDate(currentDate)+" の進捗"})
   ));
-  const members=(overviewData&&overviewData.members)||[];
+
+  // team-wide summary
+  let mWith=0, tTot=0, tDone=0;
+  members.forEach(m=>{ const st=dayStats(normalizeData(m.data),currentDate); if(st.total){ mWith++; tTot+=st.total; tDone+=st.done; } });
+  const teamPct = tTot ? Math.round(tDone/tTot*100) : 0;
+  root.appendChild(el("div",{class:"ov-summary"},
+    ovStat("メンバー", members.length+"人"),
+    ovStat("本日記入", mWith+"/"+members.length+"人"),
+    ovStat("タスク完了", tDone+"/"+tTot),
+    ovStat("完了率", teamPct+"%", true)
+  ));
+
   members.forEach(m=>{
     const d=normalizeData(m.data);
     const st=dayStats(d,currentDate);
     const pct = st.total ? Math.round(st.done/st.total*100) : 0;
-    const ul=el("ul",{class:"ro-tasks"}); ul.style.display="none";
+    const hrs=dayHours(d,currentDate);
+    const pr=dayPrio(d,currentDate);
+    const ac=acStats(d);
     const tasks=dayTasks(d,currentDate);
-    if(tasks.length) roAppendTasks(ul, tasks, 0);
-    else ul.appendChild(el("li",{class:"ro-empty", text:"この日のタスクはありません。"}));
-    const head=el("div",{class:"ro-card-head ov-row"},
-      el("span",{class:"ov-name", text:(m.username||m.email)}),
-      el("span",{class:"ws-role", text:roleLabel(m.role)}),
-      el("span",{class:"ov-prog", text: st.done+"/"+st.total+"（"+pct+"%）"})
+    const noEntry = st.total===0;
+
+    const card=el("div",{class:"ov-card"+(noEntry?" empty":"")});
+
+    // ---- header: avatar, name, role + last-updated, today's progress, caret ----
+    const caret=el("span",{class:"ov-caret", text:"▸"});
+    const head=el("div",{class:"ov-head"},
+      el("span",{class:"ov-avatar", text:((m.username||m.email||"U").trim()[0]||"U").toUpperCase()}),
+      el("div",{class:"ov-id"},
+        el("span",{class:"ov-name", text:(m.username||m.email)}),
+        el("span",{class:"ov-meta", text:roleLabel(m.role)+" ・ 更新 "+relTime(m.updated_at)})
+      ),
+      el("span",{class:"ov-prog", text: noEntry ? "未記入" : st.done+"/"+st.total+"（"+pct+"%）"}),
+      caret
     );
-    head.style.cursor="pointer";
-    head.onclick=()=>{ ul.style.display = ul.style.display==="none" ? "" : "none"; };
-    const fill=el("div",{class:"ov-bar-fill"}); fill.style.width=pct+"%";
-    root.appendChild(el("div",{class:"ro-card"}, head, el("div",{class:"ov-bar"}, fill), ul));
+
+    // ---- today's progress bar ----
+    const fill=el("div",{class:"ov-bar-fill"+((pct===100&&st.total)?" done":"")}); fill.style.width=pct+"%";
+    const bar=el("div",{class:"ov-bar"}, fill);
+
+    // ---- stat chips: 優 / 準 / time / AfterCheck ----
+    const chips=el("div",{class:"ov-chips"},
+      ovChip("優先", pr.topDone+"/"+pr.top, "top"),
+      ovChip("準", pr.semiDone+"/"+pr.semi, "semi"),
+      ovChip("時間", hrs.doneEst+"/"+hrs.est+"h"),
+      ovChip("AfterCheck", ac.done+"/"+ac.total)
+    );
+
+    // ---- expandable detail: 7-day trend + task list (with memos) + AfterCheck ----
+    const detail=el("div",{class:"ov-detail"}); detail.style.display="none";
+
+    const trend=el("div",{class:"ov-trend"});
+    recentDays(currentDate,7).forEach(ds=>{
+      const s=dayStats(d,ds), p=s.total?Math.round(s.done/s.total*100):0;
+      const cell=el("div",{class:"ov-tr-cell"+(ds===currentDate?" cur":"")+(s.total?"":" empty"), title:fmtDate(ds)+"  "+s.done+"/"+s.total});
+      const f=el("div",{class:"ov-tr-fill"}); f.style.height=(s.total?Math.max(10,p):0)+"%";
+      cell.appendChild(f);
+      cell.appendChild(el("span",{class:"ov-tr-lbl", text:ds.slice(8)}));
+      trend.appendChild(cell);
+    });
+    detail.appendChild(el("div",{class:"ov-detail-title", text:"直近7日"}));
+    detail.appendChild(trend);
+
+    detail.appendChild(el("div",{class:"ov-detail-title", text:"ToDo（"+fmtDate(currentDate)+"）"}));
+    if(tasks.length){ const ul=el("ul",{class:"ro-tasks"}); roAppendTasks(ul, tasks, 0); detail.appendChild(ul); }
+    else detail.appendChild(el("div",{class:"ro-empty", text:"この日のタスクはありません。"}));
+
+    if(ac.total){
+      detail.appendChild(el("div",{class:"ov-detail-title", text:"AfterCheck"}));
+      const aul=el("ul",{class:"ro-tasks"});
+      (d.ac||[]).forEach(x=> aul.appendChild(el("li",{class:"ro-task"+(x&&x.done?" done":"")},
+        el("span",{class:"ro-check", text:(x&&x.done)?"☑":"☐"}),
+        el("span",{class:"ro-text", text:(x&&x.text)||"（無題）"})
+      )));
+      detail.appendChild(aul);
+    }
+
+    head.onclick=()=>{ const open=detail.style.display==="none"; detail.style.display=open?"":"none"; caret.classList.toggle("open",open); };
+    card.append(head, bar, chips, detail);
+    root.appendChild(card);
   });
+
   if(!members.length) root.appendChild(el("div",{class:"ro-empty", text:"メンバーがいません。"}));
 }
 function backToEdit(){
