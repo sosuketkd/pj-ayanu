@@ -980,7 +980,12 @@ function buildTaskItem(t, depth){
   text.oninput = ()=>{ t.text=text.value; autoGrow(text); save(); };
   text.addEventListener("keydown", e=>{
     if(e.isComposing) return;   // ignore Enter/Tab while confirming IME conversion
-    if(e.key==="Tab"){ e.preventDefault(); e.shiftKey ? outdentTask(t) : indentTask(t); }
+    if(e.key==="Tab"){
+      e.preventDefault();
+      if(e.shiftKey){ outdentTask(t); }                       // Shift+Tab: 階層上げ
+      else if(text.value.trim()===""){ indentTask(t); }       // 空行 + Tab: 階層下げ
+      else { est.focus(); est.select(); }                     // 入力あり + Tab: 右の数字欄へ
+    }
     else if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); addSiblingAfter(t); }
   });
   row.appendChild(text);
@@ -1192,17 +1197,18 @@ function setupDrag(row, handle, task){
 }
 
 /* ---------------- Add handlers ---------------- */
-function addTaskFromInput(asChild){
+function addTaskFromInput(focusEst){
   const i=document.getElementById("newTask");
   const v=i.value.trim(); if(!v)return;
-  const tasks=ticket().tasks;
-  if(asChild && tasks.length){
-    // Tab → nest under the last top-level task
-    tasks[tasks.length-1].children.push(newTask(v));
-  } else {
-    tasks.push(newTask(v));
+  const n=newTask(v);
+  ticket().tasks.push(n);
+  i.value=""; render();
+  if(focusEst){
+    // Tab while typing → jump to the new row's number (estimate) field, like in-list rows
+    const est=document.querySelector('.task-row[data-id="'+n.id+'"] .est');
+    if(est){ est.focus(); est.select(); return; }
   }
-  i.value=""; render(); i.focus();
+  i.focus();
 }
 function addTodoFromInput(){
   const i=document.getElementById("newTodo");
@@ -1212,8 +1218,11 @@ function addTodoFromInput(){
 document.getElementById("addTask").onclick=()=>addTaskFromInput(false);
 document.getElementById("newTask").addEventListener("keydown",e=>{
   if(e.isComposing) return;   // ignore Enter/Tab while confirming IME conversion
-  if(e.key==="Enter"){ e.preventDefault(); addTaskFromInput(false); }
-  else if(e.key==="Tab"){ e.preventDefault(); addTaskFromInput(true); }   // Tab → 子タスクとして追加
+  if(e.key==="Enter"){ e.preventDefault(); addTaskFromInput(false); }   // Enter → 同階層に追加
+  else if(e.key==="Tab" && !e.shiftKey && e.target.value.trim()){
+    // 入力あり + Tab → 追加して、生成行の数字欄へ
+    e.preventDefault(); addTaskFromInput(true);
+  }
 });
 const newTodoEl=document.getElementById("newTodo");
 document.getElementById("addTodo").onclick=addTodoFromInput;
