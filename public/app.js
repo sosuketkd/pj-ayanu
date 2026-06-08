@@ -146,6 +146,13 @@ function addSiblingAfter(task){
   render(); focusTask(n.id);
 }
 
+/* Insert a literal tab at the caret (normal "tab = whitespace" behavior). */
+function insertTab(el){
+  const s=el.selectionStart, e=el.selectionEnd;
+  el.value = el.value.slice(0,s) + "\t" + el.value.slice(e);
+  el.selectionStart = el.selectionEnd = s+1;
+}
+
 /* Move keyboard focus to a task's text field (cursor at end). */
 function focusTask(id){
   const el = document.querySelector('.task-row[data-id="'+id+'"] .task-text');
@@ -982,9 +989,14 @@ function buildTaskItem(t, depth){
     if(e.isComposing) return;   // ignore Enter/Tab while confirming IME conversion
     if(e.key==="Tab"){
       e.preventDefault();
-      if(e.shiftKey){ outdentTask(t); }                       // Shift+Tab: 階層上げ
-      else if(text.value.trim()===""){ indentTask(t); }       // 空行 + Tab: 階層下げ
-      else { est.focus(); est.select(); }                     // 入力あり + Tab: 右の数字欄へ
+      const s=text.selectionStart, en=text.selectionEnd, len=text.value.length;
+      if(e.shiftKey){ outdentTask(t); }                         // Shift+Tab: 階層上げ
+      else if(s===0 && en===0){ indentTask(t); }                // 文頭(空含む) + Tab: 階層下げ
+      else if(s===en && en===len && text.value.trim()!==""){    // 文末 + Tab: 右の数字欄へ
+        est.focus(); est.select();
+      } else {                                                  // 文中 + Tab: 空白を挿入
+        insertTab(text); t.text=text.value; autoGrow(text); save();
+      }
     }
     else if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); addSiblingAfter(t); }
   });
@@ -1218,10 +1230,16 @@ function addTodoFromInput(){
 document.getElementById("addTask").onclick=()=>addTaskFromInput(false);
 document.getElementById("newTask").addEventListener("keydown",e=>{
   if(e.isComposing) return;   // ignore Enter/Tab while confirming IME conversion
-  if(e.key==="Enter"){ e.preventDefault(); addTaskFromInput(false); }   // Enter → 同階層に追加
-  else if(e.key==="Tab" && !e.shiftKey && e.target.value.trim()){
-    // 入力あり + Tab → 追加して、生成行の数字欄へ
-    e.preventDefault(); addTaskFromInput(true);
+  const i=e.target;
+  if(e.key==="Enter"){ e.preventDefault(); addTaskFromInput(false); return; }   // Enter → 同階層に追加
+  if(e.key!=="Tab" || e.shiftKey) return;
+  const s=i.selectionStart, en=i.selectionEnd, len=i.value.length;
+  if(s===0 && en===0) return;                                  // 文頭(空含む): 通常のフォーカス移動に任せる
+  e.preventDefault();
+  if(s===en && en===len && i.value.trim()!==""){               // 文末 + Tab: 追加して生成行の数字欄へ
+    addTaskFromInput(true);
+  } else {                                                     // 文中 + Tab: 空白を挿入
+    insertTab(i);
   }
 });
 const newTodoEl=document.getElementById("newTodo");
