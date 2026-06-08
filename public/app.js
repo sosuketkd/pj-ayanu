@@ -696,7 +696,7 @@ function renderAccount(a){
       const r=await api("/account",{method:"PATCH",body:payload});
       accountCache=r;
       currentUserEmail=r.email;
-      document.getElementById("userEmail").textContent = r.username || r.email;
+      setUserIdentity(r.username || r.email);
       renderAccount(r);   // re-render (handle now locked, fields normalized)
     }catch(e){ err.textContent=e.message; }
     finally{ saveBtn.disabled=false; }
@@ -718,20 +718,33 @@ function renderAccount(a){
     el("div",{class:"acc-actions"}, saveBtn)
   );
 }
-document.getElementById("accountBtn").onclick=openAccount;
+/* ---- user menu (top-right dropdown: account / logout) ---- */
+const userMenuBtn=document.getElementById("userMenuBtn");
+const userDropdown=document.getElementById("userDropdown");
+function closeUserMenu(){ userDropdown.classList.remove("open"); document.removeEventListener("mousedown",_userOutside,true); }
+function _userOutside(e){ if(!userDropdown.contains(e.target) && !userMenuBtn.contains(e.target)) closeUserMenu(); }
+userMenuBtn.onclick=()=>{
+  const open=userDropdown.classList.toggle("open");
+  if(open) setTimeout(()=>document.addEventListener("mousedown",_userOutside,true),0);
+  else closeUserMenu();
+};
+document.getElementById("accountBtn").onclick=()=>{ closeUserMenu(); openAccount(); };
+/* set the header user label + avatar initial */
+function setUserIdentity(name){
+  const n=(name||currentUserEmail||"").trim();
+  document.getElementById("userEmail").textContent=n;
+  const av=document.getElementById("userAvatar");
+  if(av) av.textContent=(n[0]||"U").toUpperCase();
+}
 
-/* drawer open/close */
-const wsDrawerEl=document.getElementById("wsDrawer");
-const wsOverlayEl=document.getElementById("wsOverlay");
-function openDrawer(){ wsDrawerEl.classList.add("open"); wsOverlayEl.classList.add("open"); }
-function closeDrawer(){ wsDrawerEl.classList.remove("open"); wsOverlayEl.classList.remove("open"); }
-const wsTriggerEl=document.getElementById("wsTrigger");
-wsTriggerEl.onclick=openDrawer;                       // click still works (touch)
-wsTriggerEl.addEventListener("mouseenter", openDrawer);   // hover top-left → auto open
-wsDrawerEl.addEventListener("mouseleave", closeDrawer);   // leaving the panel closes it
-document.getElementById("wsClose").onclick=closeDrawer;
-wsOverlayEl.onclick=closeDrawer;
-document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeDrawer(); });
+/* ---- mobile sidebar (persistent on desktop; slide-over on small screens) ---- */
+const sidebarEl=document.getElementById("sidebar");
+const sidebarOverlayEl=document.getElementById("sidebarOverlay");
+function openDrawer(){ sidebarEl.classList.add("open"); sidebarOverlayEl.classList.add("open"); }
+function closeDrawer(){ sidebarEl.classList.remove("open"); sidebarOverlayEl.classList.remove("open"); }
+document.getElementById("navToggle").onclick=()=> sidebarEl.classList.contains("open") ? closeDrawer() : openDrawer();
+sidebarOverlayEl.onclick=closeDrawer;
+document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeDrawer(); closeUserMenu(); } });
 
 const WD = ["日","月","火","水","木","金","土"];
 function fmtDate(ds){
@@ -1093,6 +1106,7 @@ document.getElementById("authPassword").addEventListener("keydown",e=>{
   if(e.key==="Enter"){ e.preventDefault(); submitAuth(); }
 });
 document.getElementById("logoutBtn").onclick=async ()=>{
+  closeUserMenu();
   await flushSave();
   try{ await api("/auth/logout", {method:"POST"}); }catch(_){}
   currentUserEmail=null; currentWsId=null; wsList=[]; pendingInvites=[]; data=emptyData();
@@ -1123,7 +1137,7 @@ function reveal(){ showAuth(false); showApp(true); hideBoot(); }
 
 async function afterLogin(){
   viewMode="edit";
-  document.getElementById("userEmail").textContent=currentUserEmail;
+  setUserIdentity(currentUserEmail);
   try{
     await processInviteFromURL();
 
@@ -1135,7 +1149,7 @@ async function afterLogin(){
       refreshWorkspaces(),
       (last && last!==AGG_ID) ? api("/workspaces/"+last+"/data").then(r=>r.data).catch(()=>null) : Promise.resolve(null),
     ]);
-    if(acct){ accountCache=acct; if(acct.username) document.getElementById("userEmail").textContent=acct.username; }
+    if(acct){ accountCache=acct; if(acct.username) setUserIdentity(acct.username); }
 
     if(!wsList.length){
       try{ const w=await api("/workspaces",{method:"POST",body:{name:"マイワークスペース",kind:"personal"}}); wsList=[w]; renderWorkspaces(); }catch(_){}

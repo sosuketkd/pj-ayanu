@@ -15,52 +15,6 @@
     <div class="boot-hint">読み込んでいます…</div>
   </div>
 </div>
-<header>
-  <div class="ws-switcher">
-    <div class="ws-trigger" id="wsTrigger" title="ワークスペースを切り替え">
-      <h1>📋 綾整(Ayanu)</h1>
-      <span class="ws-current" id="wsCurrent">…</span>
-      <span class="ws-caret">▸</span>
-    </div>
-  </div>
-
-  <!-- Notion-style workspace drawer -->
-  <div class="ws-overlay" id="wsOverlay"></div>
-  <aside class="ws-drawer ws-menu" id="wsDrawer">
-    <div class="ws-drawer-head">
-      <span class="t">ワークスペース</span>
-      <button class="icon-btn x" id="wsClose" title="閉じる">✕</button>
-    </div>
-    <div class="ws-drawer-body">
-      <ul id="wsList"></ul>
-      <button class="ws-add" id="addWs">＋ 新規ワークスペース</button>
-      <button class="ws-add" id="shareWsBtn">⚙ 共有・メンバー設定</button>
-    </div>
-  </aside>
-
-  <!-- Share / members modal -->
-  <div class="share-overlay" id="shareOverlay">
-    <div class="share-card" id="shareCard"></div>
-  </div>
-  <div class="ticket-nav">
-    <button id="prevDay" title="前の日">‹</button>
-    <button id="nextDay" title="次の日">›</button>
-    <button id="todayBtn" class="btn">今日</button>
-    <button id="overviewBtn" class="btn" title="メンバーのTD状況" style="display:none">👥 メンバー状況</button>
-    <button id="reportBtn" class="btn" title="レポートを表示">📊 レポート</button>
-  </div>
-  <div class="user-area" id="userArea" style="display:none">
-    <span class="sync-status" id="syncStatus"></span>
-    <span class="user-email" id="userEmail"></span>
-    <button class="btn" id="accountBtn" title="アカウント設定">⚙ アカウント</button>
-    <button class="btn" id="logoutBtn">ログアウト</button>
-  </div>
-</header>
-
-<!-- Account settings modal -->
-<div class="share-overlay" id="accountOverlay">
-  <div class="share-card" id="accountCard"></div>
-</div>
 
 <!-- Login / Signup -->
 <div class="auth-overlay" id="authOverlay">
@@ -86,60 +40,129 @@
   </div>
 </div>
 
+<!-- ===== App shell: left sidebar + main column (Cloudflare-style) ===== -->
+<div class="app-shell">
+
+  <!-- Left sidebar (persistent on desktop, slide-over on mobile) -->
+  <aside class="sidebar ws-menu" id="sidebar">
+    <div class="sidebar-brand">📋 綾整(Ayanu)</div>
+    <div class="sidebar-section-label">ワークスペース</div>
+    <nav class="sidebar-nav">
+      <ul id="wsList"></ul>
+    </nav>
+    <div class="sidebar-actions">
+      <button class="ws-add" id="addWs">＋ 新規ワークスペース</button>
+      <button class="ws-add" id="shareWsBtn">⚙ 共有・メンバー設定</button>
+    </div>
+  </aside>
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <!-- Main column -->
+  <div class="main-col">
+
+    <!-- Top bar: nav toggle + current workspace + user menu -->
+    <header class="topbar">
+      <button class="icon-btn nav-toggle" id="navToggle" title="メニュー">☰</button>
+      <div class="topbar-title" id="wsCurrent">…</div>
+      <div class="topbar-spacer"></div>
+      <span class="sync-status" id="syncStatus"></span>
+      <div class="user-area" id="userArea" style="display:none">
+        <button class="user-menu-btn" id="userMenuBtn" title="アカウント">
+          <span class="user-avatar" id="userAvatar">U</span>
+          <span class="user-email" id="userEmail"></span>
+          <span class="ws-caret">▾</span>
+        </button>
+        <div class="user-dropdown" id="userDropdown">
+          <button class="kebab-item" id="accountBtn"><span class="kebab-ic">⚙</span><span>アカウント設定</span></button>
+          <div class="kebab-sep"></div>
+          <button class="kebab-item" id="logoutBtn"><span class="kebab-ic">⎋</span><span>ログアウト</span></button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Page sub-header: date navigation + page-level actions -->
+    <div class="page-bar">
+      <div class="ticket-nav">
+        <button id="prevDay" title="前の日">‹</button>
+        <button id="nextDay" title="次の日">›</button>
+        <button id="todayBtn" class="btn">今日</button>
+      </div>
+      <div class="page-actions">
+        <button id="overviewBtn" class="btn" title="メンバーのTD状況" style="display:none">👥 メンバー状況</button>
+        <button id="reportBtn" class="btn" title="レポートを表示">📊 レポート</button>
+      </div>
+    </div>
+
+    <!-- Content -->
+    <div class="content">
+      <main id="editMain" style="display:none">
+        <!-- DATE LIST -->
+        <section class="panel">
+          <div class="panel-head">
+            <h2>カレンダー</h2>
+            <span class="sub">日付を選択</span>
+          </div>
+          <div class="cal" id="calendar"></div>
+          <div style="border-top:1px solid var(--line)"></div>
+          <ul class="daylist" id="dayList"></ul>
+        </section>
+
+        <!-- LEFT -->
+        <section class="panel">
+          <div class="panel-head">
+            <h2>ToDo</h2>
+            <span class="sub">Tab/ボタンで階層分け ・ Shift+Enterで改行</span>
+            <span class="summary" id="leftSummary" style="margin-left:auto"></span>
+          </div>
+          <div class="panel-body">
+            <ul class="tasks" id="taskList"></ul>
+            <div class="add-row">
+              <input id="newTask" placeholder="Enterで追加 / Tabで子タスクとして追加…">
+              <button class="btn btn-primary" id="addTask">追加</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- RIGHT -->
+        <section class="panel">
+          <div class="panel-head">
+            <h2>AfterCheck</h2>
+            <span class="sub">毎日共通 ・ Shift+Enterで改行</span>
+          </div>
+          <div class="panel-body">
+            <ul class="todos" id="todoList"></ul>
+            <div class="add-row">
+              <textarea id="newTodo" rows="1" placeholder="項目を追加してEnter（Shift+Enterで改行）…"></textarea>
+              <button class="btn btn-primary" id="addTodo">追加</button>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- 全体混合（自分の全TDを合算した読み取り専用ビュー） -->
+      <div id="aggregateView" class="readonly-view" style="display:none"></div>
+
+      <!-- メンバー状況（チーム管理者向けの読み取り専用ダッシュボード） -->
+      <div id="overviewView" class="readonly-view" style="display:none"></div>
+    </div>
+
+  </div>
+</div>
+
+<!-- Account settings modal -->
+<div class="share-overlay" id="accountOverlay">
+  <div class="share-card" id="accountCard"></div>
+</div>
+
+<!-- Share / members modal -->
+<div class="share-overlay" id="shareOverlay">
+  <div class="share-card" id="shareCard"></div>
+</div>
+
 <!-- Report modal (top-level so print can isolate it) -->
 <div class="share-overlay" id="reportOverlay">
   <div class="share-card report-card" id="reportCard"></div>
 </div>
-
-<main id="editMain" style="display:none">
-  <!-- DATE LIST -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>カレンダー</h2>
-      <span class="sub">日付を選択</span>
-    </div>
-    <div class="cal" id="calendar"></div>
-    <div style="border-top:1px solid var(--line)"></div>
-    <ul class="daylist" id="dayList"></ul>
-  </section>
-
-  <!-- LEFT -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>ToDo</h2>
-      <span class="sub">Tab/ボタンで階層分け ・ Shift+Enterで改行</span>
-      <span class="summary" id="leftSummary" style="margin-left:auto"></span>
-    </div>
-    <div class="panel-body">
-      <ul class="tasks" id="taskList"></ul>
-      <div class="add-row">
-        <input id="newTask" placeholder="Enterで追加 / Tabで子タスクとして追加…">
-        <button class="btn btn-primary" id="addTask">追加</button>
-      </div>
-    </div>
-  </section>
-
-  <!-- RIGHT -->
-  <section class="panel">
-    <div class="panel-head">
-      <h2>AfterCheck</h2>
-      <span class="sub">毎日共通 ・ Shift+Enterで改行</span>
-    </div>
-    <div class="panel-body">
-      <ul class="todos" id="todoList"></ul>
-      <div class="add-row">
-        <textarea id="newTodo" rows="1" placeholder="項目を追加してEnter（Shift+Enterで改行）…"></textarea>
-        <button class="btn btn-primary" id="addTodo">追加</button>
-      </div>
-    </div>
-  </section>
-</main>
-
-<!-- 全体混合（自分の全TDを合算した読み取り専用ビュー） -->
-<div id="aggregateView" class="readonly-view" style="display:none"></div>
-
-<!-- メンバー状況（チーム管理者向けの読み取り専用ダッシュボード） -->
-<div id="overviewView" class="readonly-view" style="display:none"></div>
 
 <script src="app.js"></script>
 </body>
