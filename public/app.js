@@ -685,13 +685,24 @@ function renderShare(d){
     ));
   }
 
-  // members
+  // members. The displayed email is each member's per-workspace contact address,
+  // so detect "me" by my own set of emails (globally unique), not by primary.
+  const myEmailSet = new Set((d.myEmails||[]).map(e=>e.toLowerCase()));
   card.appendChild(el("div",{class:"share-section-title", text:"メンバー（"+d.members.length+"）"}));
   d.members.forEach(m=>{
-    const isSelf = m.email.toLowerCase()===currentUserEmail.toLowerCase();
+    const isSelf = myEmailSet.has(m.email.toLowerCase());
     const row=el("div",{class:"member-row"},
       el("span",{class:"member-email", text:m.email + (isSelf?"（あなた）":"")}));
-    if(isAdmin && m.role!=="owner"){
+    if(isSelf && (d.myEmails||[]).length>1){
+      // pick which of my emails represents me in this workspace
+      const cur=(d.myContactEmail||currentUserEmail||"").toLowerCase();
+      const sel=el("select",{class:"role-select", title:"このワークスペースで使うメール", onChange:async(e)=>{
+        try{ await api("/workspaces/"+d.id+"/contact-email",{method:"PATCH",body:{email:e.target.value}}); await reopenShare(d.id); }
+        catch(err){ alert(err.message); } }},
+        ...(d.myEmails||[]).map(em=>el("option",{value:em, ...(em.toLowerCase()===cur?{selected:"selected"}:{})}, em)));
+      row.appendChild(sel);
+    }
+    if(isAdmin && m.role!=="owner" && !isSelf){
       const sel=el("select",{class:"role-select", onChange:async(e)=>{
         try{ await api("/workspaces/"+d.id+"/members/"+m.id,{method:"PATCH",body:{role:e.target.value}}); await reopenShare(d.id); }
         catch(err){ alert(err.message); } }},
@@ -713,7 +724,7 @@ function renderShare(d){
   if(!isOwner){
     card.appendChild(el("button",{class:"mini-btn block", text:"このワークスペースから退出", onClick:async()=>{
       if(!confirm("退出しますか？")) return;
-      const me=d.members.find(m=>m.email.toLowerCase()===currentUserEmail.toLowerCase());
+      const me=d.members.find(m=>myEmailSet.has(m.email.toLowerCase()));
       try{ await api("/workspaces/"+d.id+"/members/"+me.id,{method:"DELETE"}); closeShare(); await repickWorkspace(); }
       catch(e){ alert(e.message); } }}));
   }
@@ -785,13 +796,51 @@ async function openAccount(){
   try{ const a=await api("/account"); accountCache=a; renderAccount(a); ov.classList.add("open"); }
   catch(e){ if(!accountCache) alert("アカウント情報の取得に失敗しました: "+e.message); }
 }
+// Apply an emails-mutating API result and re-render the account modal.
+function applyEmailResult(r){
+  if(r.emails) accountCache={...accountCache, emails:r.emails};
+  if(r.email){ accountCache={...accountCache, email:r.email}; currentUserEmail=r.email; }
+  renderAccount(accountCache);
+}
+// The multi-email manager shown at the top of the account modal.
+function renderEmails(emails){
+  const wrap=el("div",{class:"acc-field"}, el("label",{text:"メールアドレス"}));
+  emails.forEach(m=>{
+    const row=el("div",{class:"member-row"},
+      el("span",{class:"member-email", text:m.email}));
+    if(m.primary) row.appendChild(el("span",{class:"ws-role", text:"プライマリ"}));
+    if(!m.verified) row.appendChild(el("span",{class:"badge-warn", text:"未確認"}));
+    if(!m.primary && m.verified){
+      row.appendChild(el("button",{class:"mini-btn", text:"プライマリにする", onClick:async()=>{
+        try{ applyEmailResult(await api("/account/emails/primary",{method:"POST",body:{email:m.email}}));
+          setUserIdentity(accountCache.username || accountCache.email); }
+        catch(e){ alert(e.message); } }}));
+    }
+    if(!m.primary){
+      row.appendChild(el("button",{class:"mini-btn danger", text:"削除", onClick:async()=>{
+        if(!confirm(m.email+" を削除しますか？")) return;
+        try{ applyEmailResult(await api("/account/emails",{method:"DELETE",body:{email:m.email}})); }
+        catch(e){ alert(e.message); } }}));
+    }
+    wrap.appendChild(row);
+  });
+  const addInput=el("input",{class:"share-input", type:"email", placeholder:"メールアドレスを追加"});
+  wrap.appendChild(el("div",{class:"share-row"},
+    addInput,
+    el("button",{class:"mini-btn primary", text:"追加", onClick:async()=>{
+      const v=addInput.value.trim(); if(!v) return;
+      try{ applyEmailResult(await api("/account/emails",{method:"POST",body:{email:v}})); }
+      catch(e){ alert(e.message); } }})
+  ));
+  wrap.appendChild(el("div",{class:"share-sub", text:"追加したメールは確認後にプライマリ・連絡先として使えます。招待を承認したメールは自動で確認済みになります。"}));
+  return wrap;
+}
 function renderAccount(a){
   const card=document.getElementById("accountCard");
   card.innerHTML="";
   const notif = a.notifications || {};
   const handleSet = !!a.handle;
 
-  const emailInput  = el("input",{type:"email", class:"share-input", value:a.email||""});
   const nameInput   = el("input",{type:"text",  class:"share-input", value:a.username||"", maxlength:"50", placeholder:"表示名"});
   const handleInput = el("input",{type:"text",  class:"share-input", value:a.handle||"", placeholder:"半角英数字・_ 3〜20文字"});
   if(handleSet) handleInput.disabled=true;
@@ -803,7 +852,6 @@ function renderAccount(a){
   saveBtn.onclick=async ()=>{
     err.textContent=""; saveBtn.disabled=true;
     const payload={
-      email: emailInput.value.trim(),
       username: nameInput.value.trim(),
       notifications: { emailInvites: cbInvites.checked, emailUpdates: cbUpdates.checked },
     };
@@ -822,7 +870,7 @@ function renderAccount(a){
     el("div",{class:"share-head"},
       el("strong",{text:"アカウント設定"}),
       el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeAccount})),
-    el("div",{class:"acc-field"}, el("label",{text:"メールアドレス"}), emailInput),
+    renderEmails(a.emails||[]),
     el("div",{class:"acc-field"}, el("label",{text:"ユーザーネーム"}), nameInput),
     el("div",{class:"acc-field"},
       el("label",{text:"ユーザーID"+(handleSet?"（変更不可）":"（設定後は変更できません）")}),

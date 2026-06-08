@@ -9,7 +9,7 @@ import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { sql } from '../lib/db.js';
 import { makeToken } from '../lib/auth.js';
 import { setAuthCookie } from '../middleware/auth.js';
-import { baseUrl } from '../utils.js';
+import { baseUrl, ownerOfEmail } from '../utils.js';
 import type { AppEnv } from '../types.js';
 
 const router = new Hono<AppEnv>();
@@ -106,17 +106,28 @@ async function loginWithIdentity(c: any, provider: string, p: Profile): Promise<
   if (linked.length) {
     userId = linked[0].user_id;
   } else {
-    const existing = await sql`select id from users where email = ${email}`;
+    // Link to whichever account already owns this (provider-verified) email; else create one.
+    const existing = await sql`select user_id from user_emails where lower(email) = ${email}`;
     if (existing.length) {
-      userId = existing[0].id;
+      userId = existing[0].user_id;
     } else {
       const created = await sql`insert into users (email, username) values (${email}, ${p.name || null}) returning id`;
       userId = created[0].id;
+      await sql`
+        insert into user_emails (user_id, email, verified, is_primary)
+        values (${userId}, ${email}, true, true)`;
     }
     await sql`
       insert into oauth_accounts (provider, provider_user_id, user_id)
       values (${provider}, ${p.providerUserId}, ${userId})
       on conflict (provider, provider_user_id) do nothing`;
+  }
+
+  // The provider verified this email — make sure it's recorded as a verified
+  // address of the account (no-op if already present / owned).
+  if (!(await ownerOfEmail(email))) {
+    await sql`insert into user_emails (user_id, email, verified) values (${userId}, ${email}, true)
+      on conflict (user_id, email) do update set verified = true`;
   }
 
   const u = await sql`select email from users where id = ${userId}`;

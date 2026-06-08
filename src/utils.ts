@@ -25,3 +25,16 @@ export async function membership(workspaceId: string, userId: string): Promise<s
   const r = await sql`select role from workspace_members where workspace_id=${workspaceId} and user_id=${userId}`;
   return r.length ? (r[0].role as string) : null;
 }
+
+// The account that owns an email (across all users), or null. Case-insensitive.
+export async function ownerOfEmail(email: string): Promise<string | null> {
+  const r = await sql`select user_id from user_emails where lower(email) = ${email.toLowerCase()}`;
+  return r.length ? (r[0].user_id as string) : null;
+}
+
+// True if the user owns this email and it is verified.
+export async function ownsVerifiedEmail(userId: string, email: string): Promise<boolean> {
+  const r = await sql`
+    select 1 from user_emails where user_id = ${userId} and lower(email) = ${email.toLowerCase()} and verified`;
+  return r.length > 0;
+}

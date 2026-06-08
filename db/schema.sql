@@ -17,6 +17,25 @@ alter table users add column if not exists handle text unique;
 alter table users add column if not exists notifications jsonb not null default '{}'::jsonb;
 alter table users alter column password_hash drop not null;
 
+-- Email addresses owned by a user (GitHub-style: one account, many emails).
+-- users.email mirrors the current primary. Invite-accepted and OAuth emails are
+-- auto-verified; self-added emails stay unverified until confirmed (SES, later).
+create table if not exists user_emails (
+  user_id    uuid references users(id) on delete cascade,
+  email      text not null,
+  verified   boolean not null default false,
+  is_primary boolean not null default false,
+  created_at timestamptz not null default now(),
+  primary key (user_id, email)
+);
+-- An email belongs to at most one account (case-insensitive).
+create unique index if not exists user_emails_email_uq on user_emails(lower(email));
+
+-- Backfill each existing user's login email as their verified primary (idempotent).
+insert into user_emails (user_id, email, verified, is_primary)
+select id, email, true, true from users
+on conflict (user_id, email) do nothing;
+
 -- Social-login identities linked to a user (Google / GitHub). One user can have several.
 create table if not exists oauth_accounts (
   provider         text not null,                         -- 'google' | 'github'
@@ -50,10 +69,13 @@ create table if not exists workspace_members (
   workspace_id uuid references workspaces(id) on delete cascade,
   user_id      uuid references users(id) on delete cascade,
   role         text not null default 'member',       -- 'owner' | 'admin' | 'member'
+  contact_email text,                                 -- which of the user's emails represents them here (null = primary)
   joined_at    timestamptz not null default now(),
   primary key (workspace_id, user_id)
 );
 create index if not exists workspace_members_user_idx on workspace_members(user_id);
+-- Bring existing installs up to date (idempotent).
+alter table workspace_members add column if not exists contact_email text;
 
 -- v1.5 storage: one shared blob per workspace. Superseded by member_data below
 -- (kept only as a migration source).

@@ -2,10 +2,23 @@
 import { Hono } from 'hono';
 import { sql } from '../lib/db.js';
 import { requireUser } from '../middleware/auth.js';
-import { atLeast, membership } from '../utils.js';
+import { atLeast, membership, ownsVerifiedEmail } from '../utils.js';
 import type { AppEnv } from '../types.js';
 
 const router = new Hono<AppEnv>();
+
+// Set which of MY verified emails represents me in this workspace (empty = primary).
+router.patch('/workspaces/:id/contact-email', requireUser, async (c) => {
+  const id = c.req.param('id')!, me = c.get('userId');
+  if (!(await membership(id, me))) return c.json({ error: 'アクセス権がありません' }, 403);
+  const { email } = await c.req.json().catch(() => ({}));
+  const mail = String(email || '').toLowerCase().trim();
+  if (mail && !(await ownsVerifiedEmail(me, mail))) {
+    return c.json({ error: '確認済みのメールを選んでください' }, 400);
+  }
+  await sql`update workspace_members set contact_email = ${mail || null} where workspace_id = ${id} and user_id = ${me}`;
+  return c.json({ ok: true });
+});
 
 router.patch('/workspaces/:id/members/:userId', requireUser, async (c) => {
   const id = c.req.param('id')!, target = c.req.param('userId')!, me = c.get('userId');

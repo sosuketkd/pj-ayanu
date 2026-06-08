@@ -20,7 +20,8 @@ router.get('/workspaces', requireUser, async (c) => {
   const invites = await sql`
     select i.token, i.role, w.name as workspace_name
     from invitations i join workspaces w on w.id = i.workspace_id
-    where lower(i.email) = lower(${c.get('email')}) and i.accepted_at is null
+    where lower(i.email) in (select lower(email) from user_emails where user_id = ${uid})
+      and i.accepted_at is null
     order by i.created_at`;
   return c.json({ workspaces, invites });
 });
@@ -46,18 +47,27 @@ router.get('/workspaces/:id', requireUser, async (c) => {
   if (!role) return c.json({ error: 'アクセス権がありません' }, 403);
   const wr = await sql`select id, name, kind, invite_token, invite_role from workspaces where id = ${id}`;
   if (!wr.length) return c.json({ error: '見つかりません' }, 404);
+  // `email` is the address that represents the member in THIS workspace
+  // (their per-workspace contact email, falling back to their primary).
   const members = await sql`
-    select u.id, u.email, m.role from workspace_members m join users u on u.id = m.user_id
+    select u.id, coalesce(m.contact_email, u.email) as email, m.role
+    from workspace_members m join users u on u.id = m.user_id
     where m.workspace_id = ${id}
-    order by case m.role when 'owner' then 0 when 'admin' then 1 else 2 end, u.email`;
+    order by case m.role when 'owner' then 0 when 'admin' then 1 else 2 end, email`;
   const invites = atLeast(role, 'admin')
     ? await sql`select id, email, role from invitations where workspace_id = ${id} and accepted_at is null order by created_at`
     : [];
+  // the caller's verified emails + which one they use here (for the contact picker)
+  const myEmails = (await sql`
+    select email from user_emails where user_id = ${c.get('userId')} and verified
+    order by is_primary desc, created_at`).map((r) => r.email);
+  const mine = await sql`select contact_email from workspace_members where workspace_id = ${id} and user_id = ${c.get('userId')}`;
   const w = wr[0];
   return c.json({
     id: w.id, name: w.name, kind: w.kind, myRole: role,
     inviteToken: atLeast(role, 'admin') ? w.invite_token : null,
     inviteRole: w.invite_role, members, invites,
+    myEmails, myContactEmail: mine.length ? mine[0].contact_email : null,
   });
 });
 
@@ -101,13 +111,13 @@ router.get('/workspaces/:id/overview', requireUser, async (c) => {
   const id = c.req.param('id')!;
   if (!atLeast(await membership(id, c.get('userId')), 'admin')) return c.json({ error: '権限がありません' }, 403);
   const members = await sql`
-    select u.id, u.email, u.username, m.role,
+    select u.id, coalesce(m.contact_email, u.email) as email, u.username, m.role,
       coalesce(d.data, '{}'::jsonb) as data, d.updated_at
     from workspace_members m
     join users u on u.id = m.user_id
     left join member_data d on d.workspace_id = m.workspace_id and d.user_id = m.user_id
     where m.workspace_id = ${id}
-    order by case m.role when 'owner' then 0 when 'admin' then 1 else 2 end, u.email`;
+    order by case m.role when 'owner' then 0 when 'admin' then 1 else 2 end, email`;
   return c.json({ members });
 });
 
