@@ -157,7 +157,6 @@ const taskListEl = document.getElementById("taskList");
 const todoListEl = document.getElementById("todoList");
 
 function render(){
-  document.getElementById("datePicker").value = currentDate;
   renderWorkspaces();
   renderCalendar();
   renderDayList();
@@ -237,6 +236,50 @@ function el(tag, props={}, ...kids){
   return e;
 }
 
+/* ---- floating "⋯" (kebab) menu ---- */
+let _menuEl=null, _menuAnchor=null;
+function closeMenu(){
+  if(!_menuEl) return;
+  _menuEl.remove(); _menuEl=null; _menuAnchor=null;
+  document.removeEventListener("mousedown",_menuOutside,true);
+  document.removeEventListener("scroll",closeMenu,true);
+  window.removeEventListener("resize",closeMenu);
+}
+function _menuOutside(e){
+  // ignore clicks on the trigger itself so its handler can toggle the menu closed
+  if(_menuEl && !_menuEl.contains(e.target) && !(_menuAnchor && _menuAnchor.contains(e.target))) closeMenu();
+}
+/* items: [{label, icon?, danger?, onClick} | {sep:true}] */
+function openMenu(anchor, items){
+  const reopen = _menuAnchor===anchor;
+  closeMenu();
+  if(reopen) return;   // clicking the same trigger again just closes
+  const m=el("div",{class:"kebab-menu"});
+  _menuAnchor=anchor;
+  items.forEach(it=>{
+    if(it.sep){ m.appendChild(el("div",{class:"kebab-sep"})); return; }
+    m.appendChild(el("button",{class:"kebab-item"+(it.danger?" danger":""), onClick:()=>{ closeMenu(); it.onClick(); }},
+      el("span",{class:"kebab-ic", text:it.icon||""}),
+      el("span",{text:it.label})
+    ));
+  });
+  document.body.appendChild(m);
+  const r=anchor.getBoundingClientRect();
+  let left=r.right-m.offsetWidth, top=r.bottom+4;
+  if(left<8) left=8;
+  if(top+m.offsetHeight>window.innerHeight-8) top=Math.max(8, r.top-m.offsetHeight-4);
+  m.style.top=top+"px"; m.style.left=left+"px";
+  _menuEl=m;
+  setTimeout(()=>{
+    document.addEventListener("mousedown",_menuOutside,true);
+    document.addEventListener("scroll",closeMenu,true);
+    window.addEventListener("resize",closeMenu);
+  },0);
+}
+/* deep-clone a task / todo with fresh ids */
+function cloneTask(t){ return {...t, id:uid(), children:(t.children||[]).map(cloneTask)}; }
+function cloneTodo(td){ return {...td, id:uid()}; }
+
 function renderWorkspaces(){
   const cur=curWs();
   document.getElementById("wsCurrent").textContent =
@@ -275,11 +318,26 @@ function renderWorkspaces(){
     list.appendChild(el("div",{class:"ws-group-head"},label));
     items.forEach(w=>{
       const name=el("span",{class:"ws-li-name", text:w.name, onClick:()=>selectWorkspace(w.id)});
+      const more=el("button",{class:"icon-btn ws-more", text:"⋯", title:"設定"});
+      more.onclick=(e)=>{ e.stopPropagation(); openMenu(more,[
+        {label:"共有・メンバー設定", icon:"⚙", onClick:()=>openShare(w.id)},
+        ...(w.role==="owner" ? [
+          {sep:true},
+          {label:"ワークスペースを削除", icon:"🗑", danger:true, onClick:async()=>{
+            if(!confirm("『"+w.name+"』を削除しますか？すべての日報・メンバーが削除されます。")) return;
+            try{ await api("/workspaces/"+w.id,{method:"DELETE"});
+              if(currentWsId===w.id) await repickWorkspace();
+              else await refreshWorkspaces();
+            }catch(err){ alert(err.message); }
+          }},
+        ] : []),
+      ]); };
       list.appendChild(el("li",{class:((w.id===currentWsId && viewMode!=="aggregate")?"active":"")},
         el("span",{class:"ws-dot"}),
         name,
         el("span",{class:"ws-role", text:roleLabel(w.role)}),
-        w.member_count>1 ? el("span",{class:"ws-members", title:"メンバー数", text:"👤"+w.member_count}) : null
+        w.member_count>1 ? el("span",{class:"ws-members", title:"メンバー数", text:"👤"+w.member_count}) : null,
+        more
       ));
     });
   });
@@ -378,7 +436,6 @@ async function openAggregate(){
 }
 function renderAggregate(){
   renderWorkspaces();
-  document.getElementById("datePicker").value=currentDate;
   const root=document.getElementById("aggregateView"); root.innerHTML="";
   root.appendChild(el("div",{class:"ro-head"},
     el("h2",{text:"📋 全体混合"}),
@@ -413,7 +470,6 @@ async function openOverview(){
 }
 function renderOverview(){
   renderWorkspaces();
-  document.getElementById("datePicker").value=currentDate;
   const root=document.getElementById("overviewView"); root.innerHTML="";
   root.appendChild(el("div",{class:"ro-head"},
     el("button",{class:"btn", text:"← 自分のTDに戻る", onClick:backToEdit}),
@@ -459,7 +515,7 @@ async function createWorkspace(){
   }catch(e){ alert(e.message); }
 }
 document.getElementById("addWs").onclick=createWorkspace;
-document.getElementById("shareWsBtn").onclick=openShare;
+document.getElementById("shareWsBtn").onclick=()=>openShare();
 
 /* pick a workspace after leaving/deleting one (create a default if none left) */
 async function repickWorkspace(){
@@ -479,10 +535,11 @@ function inviteUrl(token, type){ return location.origin+location.pathname+"?"+ty
 function openShareOverlay(){ document.getElementById("shareOverlay").classList.add("open"); }
 function closeShare(){ document.getElementById("shareOverlay").classList.remove("open"); }
 
-async function openShare(){
-  if(!currentWsId) return;
+async function openShare(id){
+  const wsId = id || currentWsId;
+  if(!wsId) return;
   closeDrawer();
-  try{ renderShare(await api("/workspaces/"+currentWsId)); openShareOverlay(); }
+  try{ renderShare(await api("/workspaces/"+wsId)); openShareOverlay(); }
   catch(e){ alert(e.message); }
 }
 async function reopenShare(id){
@@ -725,7 +782,7 @@ function buildTaskItem(t, depth){
   li.dataset.id = t.id;
 
   const row = document.createElement("div");
-  row.className = "task-row" + (t.done ? " done":"");
+  row.className = "task-row" + (t.done ? " done":"") + (t.prio==="semi" ? " semi":"");
   row.dataset.id = t.id;
 
   // drag handle (grab the left end to reorder AND change hierarchy)
@@ -775,19 +832,7 @@ function buildTaskItem(t, depth){
   cBtn.onclick=()=>{ t.showComment=!t.showComment; render(); };
   row.appendChild(cBtn);
 
-  // manual hierarchy: indent (top-level → child) / outdent (child → top-level)
-  const hier=document.createElement("button");
-  hier.className="icon-btn";
-  if(depth===0){
-    const i=ticket().tasks.indexOf(t);
-    hier.textContent="⇥"; hier.title="1つ上のタスクの子にする（インデント）";
-    hier.disabled = (i<=0) || t.children.length>0;   // need a previous sibling, and no own children
-    hier.onclick=()=>indentTask(t);
-  } else {
-    hier.textContent="⇤"; hier.title="親に戻す（アウトデント）";
-    hier.onclick=()=>outdentTask(t);
-  }
-  row.appendChild(hier);
+  // hierarchy is changed via Tab/Shift+Tab or by dragging the handle (no inline arrows)
 
   // add child (only allow one level of nesting -> parents only)
   if(depth===0){
@@ -802,11 +847,15 @@ function buildTaskItem(t, depth){
     row.appendChild(spacer);
   }
 
-  // delete
-  const del=document.createElement("button");
-  del.className="icon-btn"; del.textContent="🗑"; del.title="削除";
-  del.onclick=()=>{ const f=findTask(t.id); if(f){ f.list.splice(f.list.indexOf(t),1); render(); } };
-  row.appendChild(del);
+  // kebab menu: copy / delete
+  const more=document.createElement("button");
+  more.className="icon-btn"; more.textContent="⋯"; more.title="その他";
+  more.onclick=()=>openMenu(more,[
+    {label:"複製", icon:"⧉", onClick:()=>{ const f=findTask(t.id); if(f){ f.list.splice(f.list.indexOf(t)+1,0,cloneTask(t)); render(); } }},
+    {sep:true},
+    {label:"削除", icon:"🗑", danger:true, onClick:()=>{ const f=findTask(t.id); if(f){ f.list.splice(f.list.indexOf(t),1); render(); } }},
+  ]);
+  row.appendChild(more);
 
   setupDrag(row, handle, t);
   li.appendChild(row);
@@ -874,10 +923,14 @@ function renderTodos(){
         if(e.isComposing) return;   // ignore Enter while confirming IME conversion
         if(e.key==="Enter" && !e.shiftKey){ e.preventDefault(); addTodoAfter(idx); }
       });
-      const del=document.createElement("button");
-      del.className="icon-btn"; del.textContent="🗑";
-      del.onclick=()=>{ todos.splice(todos.indexOf(td),1); render(); };
-      li.append(cb,text,del);
+      const more=document.createElement("button");
+      more.className="icon-btn"; more.textContent="⋯"; more.title="その他";
+      more.onclick=()=>openMenu(more,[
+        {label:"複製", icon:"⧉", onClick:()=>{ todos.splice(todos.indexOf(td)+1,0,cloneTodo(td)); render(); }},
+        {sep:true},
+        {label:"削除", icon:"🗑", danger:true, onClick:()=>{ todos.splice(todos.indexOf(td),1); render(); }},
+      ]);
+      li.append(cb,text,more);
       todoListEl.appendChild(li);
       autoGrow(text);
     });
@@ -1001,7 +1054,6 @@ function shiftDate(delta){
 document.getElementById("prevDay").onclick=()=>shiftDate(-1);
 document.getElementById("nextDay").onclick=()=>shiftDate(1);
 document.getElementById("todayBtn").onclick=()=>{ currentDate=todayStr(); calYM=currentDate.slice(0,7); rerender(); };
-document.getElementById("datePicker").onchange=e=>{ currentDate=e.target.value||todayStr(); calYM=currentDate.slice(0,7); rerender(); };
 
 /* ---------------- Auth UI ---------------- */
 let authMode="login";   // "login" | "signup"
@@ -1060,7 +1112,12 @@ async function processInviteFromURL(){
   history.replaceState({}, "", location.pathname);   // clean the URL
 }
 
-function hideBoot(){ const b=document.getElementById("bootSplash"); if(b) b.style.display="none"; }
+function hideBoot(){
+  const b=document.getElementById("bootSplash");
+  if(!b || b.classList.contains("hide")) return;
+  b.classList.add("hide");                       // fade out
+  setTimeout(()=>{ b.style.display="none"; }, 360);
+}
 /* Reveal the fully-rendered app (or login) and drop the boot splash. */
 function reveal(){ showAuth(false); showApp(true); hideBoot(); }
 
