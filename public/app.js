@@ -16,6 +16,9 @@ let viewMode = "edit";          // "edit" | "aggregate" | "overview"
 const AGG_ID = "__aggregate__"; // sentinel id for the combined "全体混合" view
 let aggData = null;             // { workspaces:[{id,name,kind,data}] } for aggregate
 let overviewData = null;        // { members:[{id,email,username,role,data}] } for overview
+let ovSel = null;               // selected member id when drilled into a member, else null
+let ovTab = "tasks";            // member-detail tab: "tasks" | "report"
+let ovRange = null;             // {from,to} for the per-member report tab
 
 function emptyData(){ return { tickets:{}, ac:[] }; }
 function normalizeData(d){
@@ -34,7 +37,7 @@ async function api(path, opts={}){
     credentials: "include",
   });
   let body=null; try{ body=await res.json(); }catch(_){}
-  if(!res.ok) throw new Error((body && body.error) || ("HTTP "+res.status));
+  if(!res.ok){ const err=new Error((body && body.error) || ("HTTP "+res.status)); err.body=body; throw err; }
   return body;
 }
 
@@ -89,7 +92,7 @@ function ticket(){
 
 /* ---------------- Task helpers ---------------- */
 function newTask(text){
-  return {id:uid(), text:text||"", est:"", prio:"top", comment:"", showComment:false, done:false, children:[]};
+  return {id:uid(), text:text||"", est:"", actual:"", prio:"top", comment:"", showComment:false, done:false, children:[]};
 }
 function newTodo(text){ return {id:uid(), text:text||"", done:false}; }
 
@@ -297,9 +300,9 @@ function renderWorkspaces(){
   list.innerHTML="";
 
   // combined view across all of my workspaces
-  list.appendChild(el("li",{class:"ws-aggregate"+(currentWsId===AGG_ID?" active":"")},
+  list.appendChild(el("li",{class:"ws-aggregate"+(currentWsId===AGG_ID?" active":""), onClick:openAggregate},
     el("span",{class:"ws-dot"}),
-    el("span",{class:"ws-li-name", text:"📋 全体混合", onClick:openAggregate})
+    el("span",{class:"ws-li-name", text:"📋 全体混合"})
   ));
 
   // pending invitations
@@ -324,7 +327,7 @@ function renderWorkspaces(){
     if(!items.length) return;
     list.appendChild(el("div",{class:"ws-group-head"},label));
     items.forEach(w=>{
-      const name=el("span",{class:"ws-li-name", text:w.name, onClick:()=>selectWorkspace(w.id)});
+      const name=el("span",{class:"ws-li-name", text:w.name});
       const more=el("button",{class:"icon-btn ws-more", text:"⋯", title:"設定"});
       more.onclick=(e)=>{ e.stopPropagation(); openMenu(more,[
         {label:"共有・メンバー設定", icon:"⚙", onClick:()=>openShare(w.id)},
@@ -339,13 +342,22 @@ function renderWorkspaces(){
           }},
         ] : []),
       ]); };
-      list.appendChild(el("li",{class:((w.id===currentWsId && viewMode!=="aggregate")?"active":"")},
+      // parent row = the member's own TD (edit). Active only in edit mode.
+      const editActive = (w.id===currentWsId && viewMode==="edit");
+      list.appendChild(el("li",{class:(editActive?"active":""), onClick:()=>selectWorkspace(w.id)},
         el("span",{class:"ws-dot"}),
         name,
         el("span",{class:"ws-role", text:roleLabel(w.role)}),
         w.member_count>1 ? el("span",{class:"ws-members", title:"メンバー数", text:"👤"+w.member_count}) : null,
         more
       ));
+      // admins/owners of a team get a separate oversight destination right below.
+      if(w.kind==="team" && (w.role==="admin"||w.role==="owner")){
+        const ovActive = (w.id===currentWsId && viewMode==="overview");
+        list.appendChild(el("li",{class:"ws-sub"+(ovActive?" active":""), onClick:()=>gotoOverview(w.id)},
+          el("span",{class:"ws-li-name", text:"👥 メンバー状況"})
+        ));
+      }
     });
   });
 }
@@ -362,7 +374,7 @@ async function selectWorkspace(id){
   await flushSave();
   currentWsId=id;
   try{ localStorage.setItem("ayanu.lastWs", id); }catch(_){}
-  setView("edit"); updateModeButtons();
+  setView("edit");
   closeDrawer();
   currentDate=todayStr(); calYM=currentDate.slice(0,7);
 
@@ -393,12 +405,6 @@ function setView(mode){
   document.getElementById("aggregateView").style.display = mode==="aggregate" ? "" : "none";
   document.getElementById("overviewView").style.display  = mode==="overview"  ? "" : "none";
   document.getElementById("reportBtn").style.display     = mode==="edit"      ? "" : "none";
-}
-/* The "👥 メンバー状況" button shows only for a team you administer, in edit mode. */
-function updateModeButtons(){
-  const cur=curWs();
-  const isTeamAdmin = !!cur && cur.kind==="team" && (cur.role==="admin"||cur.role==="owner");
-  document.getElementById("overviewBtn").style.display = (viewMode==="edit" && isTeamAdmin) ? "" : "none";
 }
 /* Re-render whatever view is active (used when the date changes). */
 function rerender(){
@@ -479,7 +485,7 @@ async function openAggregate(){
   currentWsId=AGG_ID;
   try{ localStorage.setItem("ayanu.lastWs", AGG_ID); }catch(_){}
   try{ aggData=await api("/aggregate"); }catch(_){ aggData={workspaces:[]}; }
-  setView("aggregate"); updateModeButtons(); closeDrawer();
+  setView("aggregate"); closeDrawer();
   currentDate=todayStr(); calYM=currentDate.slice(0,7);
   renderAggregate();
 }
@@ -487,6 +493,7 @@ function renderAggregate(){
   renderWorkspaces();
   const root=document.getElementById("aggregateView"); root.innerHTML="";
   root.appendChild(el("div",{class:"ro-head"},
+    el("button",{class:"btn", text:"← 自分のTDに戻る", onClick:backToEdit}),
     el("h2",{text:"📋 全体混合"}),
     el("span",{class:"ro-sub", text:fmtDate(currentDate)+" の自分のTD（全ワークスペース）"})
   ));
@@ -509,12 +516,20 @@ function renderAggregate(){
 }
 
 /* ---- メンバー状況: team admin oversight dashboard, read-only ---- */
+/* Navigate to a team's oversight dashboard from the sidebar. Selecting the
+   workspace first loads its own TD, so "自分のTDに戻る" lands on the right data. */
+async function gotoOverview(id){
+  if(currentWsId!==id) await selectWorkspace(id);
+  await openOverview();
+  closeDrawer();
+}
 async function openOverview(){
   if(!currentWsId || currentWsId===AGG_ID) return;
   await flushSave();
   try{ overviewData=await api("/workspaces/"+currentWsId+"/overview"); }
   catch(e){ alert(e.message); return; }
-  setView("overview"); updateModeButtons();
+  setView("overview");
+  ovSel=null; ovTab="tasks";   // always land on the member list
   renderOverview();
 }
 function ovStat(label, val, accent){
@@ -526,6 +541,7 @@ function ovStat(label, val, accent){
 function ovChip(label, val, cls){
   return el("span",{class:"ov-chip"+(cls?" "+cls:"")}, el("b",{text:val}), el("span",{class:"ov-chip-lbl", text:label}));
 }
+/* Two-pane oversight: member list (left) + selected member's status (right). */
 function renderOverview(){
   renderWorkspaces();
   const root=document.getElementById("overviewView"); root.innerHTML="";
@@ -536,6 +552,8 @@ function renderOverview(){
     el("h2",{text:"👥 メンバー状況"}),
     el("span",{class:"ro-sub", text:fmtDate(currentDate)+" の進捗"})
   ));
+
+  if(!members.length){ root.appendChild(el("div",{class:"ro-empty", text:"メンバーがいません。"})); return; }
 
   // team-wide summary
   let mWith=0, tTot=0, tDone=0;
@@ -548,97 +566,215 @@ function renderOverview(){
     ovStat("完了率", teamPct+"%", true)
   ));
 
+  // keep a valid selection; default to the first member
+  let sel = members.find(m=>String(m.id)===String(ovSel));
+  if(!sel){ sel=members[0]; ovSel=sel.id; }
+
+  // ---- left: member list ----
+  const listPane=el("div",{class:"ov-list"});
   members.forEach(m=>{
     const d=normalizeData(m.data);
     const st=dayStats(d,currentDate);
-    const pct = st.total ? Math.round(st.done/st.total*100) : 0;
-    const hrs=dayHours(d,currentDate);
-    const pr=dayPrio(d,currentDate);
-    const ac=acStats(d);
-    const tasks=dayTasks(d,currentDate);
+    const p = st.total ? Math.round(st.done/st.total*100) : 0;
     const noEntry = st.total===0;
-
-    const card=el("div",{class:"ov-card"+(noEntry?" empty":"")});
-
-    // ---- header: avatar, name, role + last-updated, today's progress, caret ----
-    const caret=el("span",{class:"ov-caret", text:"▸"});
-    const head=el("div",{class:"ov-head"},
+    const row=el("div",{class:"ov-li"+(String(m.id)===String(ovSel)?" active":"")+(noEntry?" empty":"")});
+    row.appendChild(el("div",{class:"ov-li-top"},
       el("span",{class:"ov-avatar", text:((m.username||m.email||"U").trim()[0]||"U").toUpperCase()}),
       el("div",{class:"ov-id"},
         el("span",{class:"ov-name", text:(m.username||m.email)}),
-        el("span",{class:"ov-meta", text:roleLabel(m.role)+" ・ 更新 "+relTime(m.updated_at)})
-      ),
-      el("span",{class:"ov-prog", text: noEntry ? "未記入" : st.done+"/"+st.total+"（"+pct+"%）"}),
-      caret
-    );
-
-    // ---- today's progress bar ----
-    const fill=el("div",{class:"ov-bar-fill"+((pct===100&&st.total)?" done":"")}); fill.style.width=pct+"%";
-    const bar=el("div",{class:"ov-bar"}, fill);
-
-    // ---- stat chips: 優 / 準 / time / AfterCheck ----
-    const chips=el("div",{class:"ov-chips"},
-      ovChip("優先", pr.topDone+"/"+pr.top, "top"),
-      ovChip("準", pr.semiDone+"/"+pr.semi, "semi"),
-      ovChip("時間", hrs.doneEst+"/"+hrs.est+"h"),
-      ovChip("AfterCheck", ac.done+"/"+ac.total)
-    );
-
-    // ---- expandable detail: 7-day trend + task list (with memos) + AfterCheck ----
-    const detail=el("div",{class:"ov-detail"}); detail.style.display="none";
-
-    const trend=el("div",{class:"ov-trend"});
-    recentDays(currentDate,7).forEach(ds=>{
-      const s=dayStats(d,ds), p=s.total?Math.round(s.done/s.total*100):0;
-      const cell=el("div",{class:"ov-tr-cell"+(ds===currentDate?" cur":"")+(s.total?"":" empty"), title:fmtDate(ds)+"  "+s.done+"/"+s.total});
-      const f=el("div",{class:"ov-tr-fill"}); f.style.height=(s.total?Math.max(10,p):0)+"%";
-      cell.appendChild(f);
-      cell.appendChild(el("span",{class:"ov-tr-lbl", text:ds.slice(8)}));
-      trend.appendChild(cell);
-    });
-    detail.appendChild(el("div",{class:"ov-detail-title", text:"直近7日"}));
-    detail.appendChild(trend);
-
-    detail.appendChild(el("div",{class:"ov-detail-title", text:"ToDo（"+fmtDate(currentDate)+"）"}));
-    if(tasks.length){ const ul=el("ul",{class:"ro-tasks"}); roAppendTasks(ul, tasks, 0); detail.appendChild(ul); }
-    else detail.appendChild(el("div",{class:"ro-empty", text:"この日のタスクはありません。"}));
-
-    if(ac.total){
-      detail.appendChild(el("div",{class:"ov-detail-title", text:"AfterCheck"}));
-      const aul=el("ul",{class:"ro-tasks"});
-      (d.ac||[]).forEach(x=> aul.appendChild(el("li",{class:"ro-task"+(x&&x.done?" done":"")},
-        el("span",{class:"ro-check", text:(x&&x.done)?"☑":"☐"}),
-        el("span",{class:"ro-text", text:(x&&x.text)||"（無題）"})
-      )));
-      detail.appendChild(aul);
-    }
-
-    head.onclick=()=>{ const open=detail.style.display==="none"; detail.style.display=open?"":"none"; caret.classList.toggle("open",open); };
-    card.append(head, bar, chips, detail);
-    root.appendChild(card);
+        el("span",{class:"ov-meta", text: noEntry ? "未記入" : st.done+"/"+st.total+"（"+p+"%）"})
+      )
+    ));
+    const fill=el("div",{class:"ov-bar-fill"+((p===100&&st.total)?" done":"")}); fill.style.width=p+"%";
+    row.appendChild(el("div",{class:"ov-bar"}, fill));
+    row.onclick=()=>{ ovSel=m.id; renderOverview(); };
+    listPane.appendChild(row);
   });
 
-  if(!members.length) root.appendChild(el("div",{class:"ro-empty", text:"メンバーがいません。"}));
+  // ---- right: selected member's status ----
+  const detailPane=el("div",{class:"ov-pane"});
+  renderMemberDetail(detailPane, sel);
+
+  root.appendChild(el("div",{class:"ov-split"}, listPane, detailPane));
+}
+
+/* right pane: selected member's header + tabs (起票タスク / レポート) */
+function renderMemberDetail(root, m){
+  const d=normalizeData(m.data);
+  root.appendChild(el("div",{class:"ov-pane-head"},
+    el("span",{class:"ov-avatar lg", text:((m.username||m.email||"U").trim()[0]||"U").toUpperCase()}),
+    el("div",{class:"ov-id"},
+      el("span",{class:"ov-name big", text:(m.username||m.email)}),
+      el("span",{class:"ov-meta", text:roleLabel(m.role)+" ・ 更新 "+relTime(m.updated_at)})
+    )
+  ));
+  root.appendChild(el("div",{class:"ov-tabs"},
+    el("button",{class:"ov-tab"+(ovTab==="tasks"?" active":""), text:"📝 起票タスク", onClick:()=>{ ovTab="tasks"; renderOverview(); }}),
+    el("button",{class:"ov-tab"+(ovTab==="report"?" active":""), text:"📊 レポート", onClick:()=>{ ovTab="report"; renderOverview(); }})
+  ));
+  if(ovTab==="report") renderMemberReport(root, d);
+  else                 renderMemberTasks(root, d);
+}
+
+/* tasks tab: day chips + 7-day trend + the selected day's ToDo + AfterCheck.
+   The page-bar date nav drives `currentDate`, so admins can step through days. */
+function renderMemberTasks(root, d){
+  const st=dayStats(d,currentDate);
+  const hrs=dayHours(d,currentDate), pr=dayPrio(d,currentDate), ac=acStats(d);
+  const tasks=dayTasks(d,currentDate);
+
+  root.appendChild(el("div",{class:"ov-chips standalone"},
+    ovChip("優先", pr.topDone+"/"+pr.top, "top"),
+    ovChip("準", pr.semiDone+"/"+pr.semi, "semi"),
+    ovChip("時間", hrs.doneEst+"/"+hrs.est+"h"),
+    ovChip("AfterCheck", ac.done+"/"+ac.total)
+  ));
+
+  const trend=el("div",{class:"ov-trend"});
+  recentDays(currentDate,7).forEach(ds=>{
+    const s=dayStats(d,ds), p=s.total?Math.round(s.done/s.total*100):0;
+    const cell=el("div",{class:"ov-tr-cell"+(ds===currentDate?" cur":"")+(s.total?"":" empty"), title:fmtDate(ds)+"  "+s.done+"/"+s.total});
+    const f=el("div",{class:"ov-tr-fill"}); f.style.height=(s.total?Math.max(10,p):0)+"%";
+    cell.appendChild(f);
+    cell.appendChild(el("span",{class:"ov-tr-lbl", text:ds.slice(8)}));
+    trend.appendChild(cell);
+  });
+  root.appendChild(el("div",{class:"ov-detail-title", text:"直近7日"}));
+  root.appendChild(trend);
+
+  root.appendChild(el("div",{class:"ov-detail-title", text:"起票タスク（"+fmtDate(currentDate)+"）"}));
+  if(tasks.length){ const ul=el("ul",{class:"ro-tasks"}); roAppendTasks(ul, tasks, 0); root.appendChild(ul); }
+  else root.appendChild(el("div",{class:"ro-empty", text:"この日のタスクはありません。上部の日付ナビで他の日を確認できます。"}));
+
+  if(ac.total){
+    root.appendChild(el("div",{class:"ov-detail-title", text:"AfterCheck"}));
+    const aul=el("ul",{class:"ro-tasks"});
+    (d.ac||[]).forEach(x=> aul.appendChild(el("li",{class:"ro-task"+(x&&x.done?" done":"")},
+      el("span",{class:"ro-check", text:(x&&x.done)?"☑":"☐"}),
+      el("span",{class:"ro-text", text:(x&&x.text)||"（無題）"})
+    )));
+    root.appendChild(aul);
+  }
+}
+
+/* report tab: the member's tickets aggregated over a chosen range. */
+function renderMemberReport(root, content){
+  if(!ovRange) ovRange=defaultReportRange();
+  const {from,to}=ovRange;
+  const rep=computeReport(from, to, content);
+
+  root.appendChild(el("div",{class:"report-range"},
+    el("span",{class:"share-sub", text:"期間"}),
+    el("input",{type:"date", class:"share-input", value:from, onChange:e=>{ ovRange.from=e.target.value||from; renderOverview(); }}),
+    el("span",{text:"〜"}),
+    el("input",{type:"date", class:"share-input", value:to, onChange:e=>{ ovRange.to=e.target.value||to; renderOverview(); }})
+  ));
+  root.appendChild(el("div",{class:"report-presets"},
+    el("button",{class:"mini-btn", text:"今月", onClick:()=>{ ovRange=defaultReportRange(); renderOverview(); }}),
+    el("button",{class:"mini-btn", text:"過去30日", onClick:()=>{ ovRange=lastNDays(30); renderOverview(); }}),
+    el("button",{class:"mini-btn", text:"全期間", onClick:()=>{ const ks=Object.keys((content&&content.tickets)||{}).sort(); ovRange={from:ks[0]||todayStr(), to:ks[ks.length-1]||todayStr()}; renderOverview(); }})
+  ));
+  appendReportBody(root, rep);
 }
 function backToEdit(){
   // `data` is untouched while viewing the dashboard, so just re-render it instantly
-  setView("edit"); updateModeButtons();
+  setView("edit");
   renderClean(); setSyncStatus("saved");
 }
-document.getElementById("overviewBtn").onclick=openOverview;
+
+/* A labeled "← 戻る" button for overlay headers (sits at the left, before the title). */
+function backChip(onClick){
+  return el("button",{class:"ws-back", type:"button", text:"← 戻る", title:"戻る", onClick});
+}
 
 /* create a new workspace */
-async function createWorkspace(){
-  const name=prompt("ワークスペース名"); if(!name || !name.trim()) return;
-  const kind=confirm("チーム用（共有を前提）にしますか？\n\nOK＝チーム　/　キャンセル＝個人") ? "team" : "personal";
-  try{
-    const w=await api("/workspaces",{method:"POST",body:{name:name.trim(), kind}});
-    await refreshWorkspaces();
-    await selectWorkspace(w.id);
-  }catch(e){ alert(e.message); }
+/* ---- New workspace modal (name + type cards) ---- */
+function closeWsCreate(){ document.getElementById("wsCreateOverlay").classList.remove("open"); }
+function openWsCreate(){
+  const ov=document.getElementById("wsCreateOverlay");
+  const card=document.getElementById("wsCreateCard");
+  let kind="personal";
+  card.innerHTML="";
+
+  const nameInput=el("input",{class:"share-input", type:"text", maxlength:"60", placeholder:"例）マーケティングチーム"});
+  const err=el("div",{class:"auth-error"});
+  const createBtn=el("button",{class:"btn btn-primary", text:"作成する"});
+
+  // initial ToDo items (optional; multiple rows). Seeds today's ToDo in the new workspace.
+  const tdWrap=el("div",{class:"ws-td-list"});
+  function ensureOneRow(){ if(!tdWrap.querySelector(".ws-td-row")) addTdRow(""); }
+  function addTdRow(val){
+    const inp=el("input",{class:"share-input", type:"text", maxlength:"200", placeholder:"例）資料をまとめる", value:val||""});
+    inp.addEventListener("keydown",e=>{
+      if(e.isComposing) return;                                  // ignore Enter during IME conversion
+      if(e.key==="Enter"){ e.preventDefault(); const i=addTdRow("").querySelector("input"); if(i) i.focus(); }
+    });
+    const del=el("button",{class:"icon-btn", type:"button", text:"✕", title:"削除",
+      onClick:()=>{ row.remove(); ensureOneRow(); }});
+    const row=el("div",{class:"ws-td-row"}, inp, del);
+    tdWrap.appendChild(row);
+    return row;
+  }
+  addTdRow("");
+  const addTdBtn=el("button",{class:"mini-btn", type:"button", text:"＋ 項目を追加",
+    onClick:()=>{ const i=addTdRow("").querySelector("input"); if(i) i.focus(); }});
+
+  const kinds=[
+    {k:"personal", ic:"👤", name:"個人", desc:"自分専用のスペース。タスク管理に集中。"},
+    {k:"team",     ic:"👥", name:"チーム", desc:"メンバーを招待して共有。各自のTDを管理者が把握。"},
+  ];
+  const cards={};
+  function pick(k){ kind=k; kinds.forEach(x=>cards[x.k].classList.toggle("selected", x.k===k)); }
+  const grid=el("div",{class:"ws-kind-grid"});
+  kinds.forEach(x=>{
+    const c=el("button",{class:"ws-kind-card", type:"button", onClick:()=>pick(x.k)},
+      el("span",{class:"ws-kind-ic", text:x.ic}),
+      el("span",{class:"ws-kind-name", text:x.name}),
+      el("span",{class:"ws-kind-desc", text:x.desc}));
+    cards[x.k]=c; grid.appendChild(c);
+  });
+
+  createBtn.onclick=async ()=>{
+    const nm=nameInput.value.trim();
+    if(!nm){ err.textContent="ワークスペース名を入力してください"; nameInput.focus(); return; }
+    // collect the initial ToDo items (trim + drop blanks, keep order)
+    const todoItems=[...tdWrap.querySelectorAll(".ws-td-row input")].map(i=>i.value.trim()).filter(Boolean);
+    err.textContent=""; createBtn.disabled=true;
+    try{
+      const w=await api("/workspaces",{method:"POST",body:{name:nm, kind}});
+      closeWsCreate();
+      await refreshWorkspaces();
+      await selectWorkspace(w.id);
+      // seed today's ToDo with the entered items (selectWorkspace finished loading the new, empty data)
+      if(todoItems.length && currentWsId===w.id){
+        ticket().tasks=todoItems.map(t=>newTask(t));
+        save(); render();
+      }
+      if(kind==="team") openShare(w.id);   // jump straight to inviting members
+    }catch(e){ err.textContent=e.message; createBtn.disabled=false; }
+  };
+
+  card.append(
+    el("div",{class:"share-head"},
+      backChip(closeWsCreate),
+      el("strong",{text:"新しいワークスペース"}),
+      el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeWsCreate})),
+    el("div",{class:"acc-field"}, el("label",{text:"名前"}), nameInput),
+    el("div",{class:"acc-field"}, el("label",{text:"種類"}), grid),
+    el("div",{class:"acc-field"},
+      el("label",{text:"ToDo（任意・複数可）"}),
+      tdWrap,
+      el("div",{class:"ws-td-add"}, addTdBtn)),
+    err,
+    el("div",{class:"acc-actions"}, createBtn)
+  );
+  pick("personal");
+  ov.classList.add("open");
+  setTimeout(()=>nameInput.focus(),50);
+  nameInput.addEventListener("keydown",e=>{ if(e.key==="Enter"){ e.preventDefault(); createBtn.click(); } });
 }
-document.getElementById("addWs").onclick=createWorkspace;
-document.getElementById("shareWsBtn").onclick=()=>openShare();
+document.getElementById("addWs").onclick=openWsCreate;
+document.getElementById("wsCreateOverlay").addEventListener("mousedown",e=>{ if(e.target.id==="wsCreateOverlay") closeWsCreate(); });
 
 /* pick a workspace after leaving/deleting one (create a default if none left) */
 async function repickWorkspace(){
@@ -677,6 +813,7 @@ function renderShare(d){
   card.innerHTML="";
 
   card.appendChild(el("div",{class:"share-head"},
+    backChip(closeShare),
     el("strong",{text:d.name}),
     el("span",{class:"ws-role", text:roleLabel(d.myRole)}),
     el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeShare})
@@ -796,6 +933,28 @@ function renderShare(d){
 
 /* ---------------- Account settings ---------------- */
 let accountCache=null;   // last-known account info (primed at login) for instant modal open
+let accountSection="profile";   // which settings pane is open (persists across re-renders)
+/* ---- Theme (light / dark), persisted per device ---- */
+function getTheme(){ try{ return localStorage.getItem("ayanu_theme")==="dark" ? "dark" : "light"; }catch(_){ return "light"; } }
+function setTheme(t){
+  if(t==="dark") document.documentElement.setAttribute("data-theme","dark");
+  else document.documentElement.removeAttribute("data-theme");
+  try{ localStorage.setItem("ayanu_theme", t); }catch(_){}
+}
+function renderThemeSeg(){
+  const cur=getTheme();
+  const seg=el("div",{class:"seg"});
+  [["light","☀ ライト"],["dark","🌙 ダーク"]].forEach(([v,lbl])=>{
+    const b=el("button",{class:"seg-btn"+(cur===v?" active":""), type:"button", text:lbl, onClick:()=>{
+      setTheme(v);
+      seg.querySelectorAll(".seg-btn").forEach(x=>x.classList.remove("active"));
+      b.classList.add("active");
+    }});
+    seg.appendChild(b);
+  });
+  return seg;
+}
+
 function closeAccount(){ document.getElementById("accountOverlay").classList.remove("open"); }
 async function openAccount(){
   const ov=document.getElementById("accountOverlay");
@@ -842,52 +1001,286 @@ function renderEmails(emails){
   wrap.appendChild(el("div",{class:"share-sub", text:"追加したメールは確認後にプライマリ・連絡先として使えます。招待を承認したメールは自動で確認済みになります。"}));
   return wrap;
 }
-function renderAccount(a){
-  const card=document.getElementById("accountCard");
-  card.innerHTML="";
-  const notif = a.notifications || {};
-  const handleSet = !!a.handle;
 
-  const nameInput   = el("input",{type:"text",  class:"share-input", value:a.username||"", maxlength:"50", placeholder:"表示名"});
-  const handleInput = el("input",{type:"text",  class:"share-input", value:a.handle||"", placeholder:"半角英数字・_ 3〜20文字"});
+// Re-render the account modal from a fresh account object returned by an API call.
+function applyAccount(a){ accountCache=a; renderAccount(a); }
+
+// Google / GitHub connection management (link / unlink).
+function renderOAuthLinks(a){
+  const wrap=el("div",{class:"acc-field"});
+  [["google","Google"],["github","GitHub"]].forEach(([id,label])=>{
+    const st=(a.oauth&&a.oauth[id])||{configured:false, linked:false};
+    const row=el("div",{class:"member-row"}, el("span",{class:"member-email", text:label}));
+    if(!st.configured){
+      row.appendChild(el("span",{class:"badge-warn", text:"未設定"}));
+    } else if(st.linked){
+      row.appendChild(el("span",{class:"ws-role", text:"連携済み"}));
+      row.appendChild(el("button",{class:"mini-btn danger", text:"解除", onClick:async()=>{
+        if(!confirm(label+" の連携を解除しますか？")) return;
+        try{ applyAccount(await api("/account/oauth/"+id,{method:"DELETE"})); }
+        catch(e){ alert(e.message); }
+      }}));
+    } else {
+      row.appendChild(el("button",{class:"mini-btn", text:"連携する",
+        onClick:()=>{ location.href="/api/auth/oauth/"+id+"?mode=link"; }}));
+    }
+    wrap.appendChild(row);
+  });
+  wrap.appendChild(el("div",{class:"share-sub", text:"Google・GitHub アカウントを連携すると、それらでもログインできます。"}));
+  return wrap;
+}
+
+// Render a QR code locally (no external service) from a string, as an <img>.
+function qrImg(text, size){
+  size = size || 180;
+  try{
+    const qr = qrcode(0, "M");           // type 0 = auto-size, EC level M
+    qr.addData(text); qr.make();
+    const cell = Math.max(2, Math.round(size / qr.getModuleCount()));
+    return el("img",{class:"tfa-qr", alt:"認証アプリ用QRコード", src:qr.createDataURL(cell, 4)});
+  }catch(_){
+    return el("div",{class:"tfa-help", text:"QRの生成に失敗しました。下のキーを手動で入力してください。"});
+  }
+}
+
+// Two-factor (TOTP) setup / disable.
+function render2FA(a){
+  const enabled=!!(a.twoFactor&&a.twoFactor.enabled);
+  const wrap=el("div",{class:"acc-field"}, el("label",{text:"2段階認証（2FA）"}));
+  wrap.appendChild(el("div",{class:"member-row"},
+    el("span",{class:"member-email", text:"認証アプリ（TOTP）"}),
+    el("span",{class: enabled?"ws-role":"badge-warn", text: enabled?"有効":"無効"})));
+  const body=el("div",{class:"tfa-body"}); wrap.appendChild(body);
+  const err2=el("div",{class:"auth-error"});
+
+  if(enabled){
+    const code=el("input",{class:"share-input", type:"text", inputmode:"numeric", maxlength:"6", placeholder:"認証コード6桁"});
+    body.append(
+      el("div",{class:"tfa-help", text:"無効にするには認証アプリのコードを入力してください。"}),
+      el("div",{class:"share-row"}, code,
+        el("button",{class:"mini-btn danger", text:"無効にする", onClick:async()=>{
+          err2.textContent="";
+          try{ applyAccount(await api("/account/2fa/disable",{method:"POST",body:{code:code.value.trim()}})); }
+          catch(e){ err2.textContent=e.message; }
+        }})),
+      err2);
+  } else {
+    body.appendChild(el("button",{class:"mini-btn", text:"2FAを設定する", onClick:async()=>{
+      try{ render2FASetup(body, await api("/account/2fa/setup",{method:"POST"})); }
+      catch(e){ alert(e.message); }
+    }}));
+  }
+
+  // メール認証（要素のみ・実装は今後）
+  wrap.appendChild(renderEmailAuthPlaceholder());
+  return wrap;
+}
+// Scan-the-QR setup: QR (read locally) + manual key fallback + a code field to confirm.
+function render2FASetup(body, s){
+  body.innerHTML="";
+  const code=el("input",{class:"share-input", type:"text", inputmode:"numeric", maxlength:"6", placeholder:"認証コード6桁"});
+  const err2=el("div",{class:"auth-error"});
+  body.append(
+    el("div",{class:"tfa-help", text:"認証アプリ（Google Authenticator・Authy・1Password など）で下のQRコードを読み取ってください。読み取れない場合は下のキーを手動入力します。"}),
+    el("div",{class:"tfa-qr-wrap"}, qrImg(s.otpauth, 184)),
+    el("div",{class:"tfa-secret"},
+      el("code",{text:s.secret}),
+      el("button",{class:"mini-btn", text:"コピー", onClick:()=>{ if(navigator.clipboard) navigator.clipboard.writeText(s.secret); }})),
+    el("div",{class:"share-row"}, code,
+      el("button",{class:"mini-btn primary", text:"有効にする", onClick:async()=>{
+        err2.textContent="";
+        try{ applyAccount(await api("/account/2fa/enable",{method:"POST",body:{code:code.value.trim()}})); }
+        catch(e){ err2.textContent=e.message; }
+      }})),
+    err2);
+}
+// Email-based authentication — element only; not wired up yet.
+function renderEmailAuthPlaceholder(){
+  const box=el("div",{});
+  const btn=el("button",{class:"mini-btn", text:"設定する"}); btn.disabled=true;
+  box.append(
+    el("div",{class:"share-section-title", text:"メール認証"}),
+    el("div",{class:"member-row"},
+      el("span",{class:"member-email", text:"メールでの確認コード"}),
+      el("span",{class:"badge-warn", text:"未設定"})),
+    el("div",{class:"tfa-help", text:"ログイン時にメールへ確認コードを送って認証します（準備中・近日提供予定）。"}),
+    btn);
+  return box;
+}
+
+// Danger zone: permanently delete the account.
+function renderDangerZone(a){
+  const wrap=el("div",{class:"acc-field"});
+  wrap.appendChild(el("div",{class:"tfa-help", text:"アカウントと、あなたが単独で所有するワークスペースのデータが完全に削除されます。元に戻せません。"}));
+  wrap.appendChild(el("button",{class:"mini-btn danger", text:"アカウントを削除", onClick:async()=>{
+    const ans=prompt("削除を確認するため、メールアドレス（"+a.email+"）を入力してください");
+    if(ans==null) return;
+    if(ans.trim().toLowerCase()!==String(a.email).toLowerCase()){ alert("メールアドレスが一致しません。"); return; }
+    try{
+      await api("/account",{method:"DELETE"});
+      location.href="/";   // session cleared → reload to the login screen
+    }catch(e){
+      const ws=e.body && e.body.workspaces;
+      alert(e.message + (ws&&ws.length ? "\n対象: "+ws.join("、") : ""));
+    }
+  }}));
+  return wrap;
+}
+
+// Profile pane: display name + public user ID.
+function accProfilePane(a){
+  const handleSet=!!a.handle;
+  const nameInput   = el("input",{type:"text", class:"share-input", value:a.username||"", maxlength:"50", placeholder:"表示名"});
+  const handleInput = el("input",{type:"text", class:"share-input", value:a.handle||"", placeholder:"半角英数字・_ 3〜20文字"});
   if(handleSet) handleInput.disabled=true;
-  const cbInvites = el("input",{type:"checkbox"}); cbInvites.checked = notif.emailInvites !== false;
-  const cbUpdates = el("input",{type:"checkbox"}); cbUpdates.checked = !!notif.emailUpdates;
-
-  const err = el("div",{class:"auth-error"});
-  const saveBtn = el("button",{class:"btn btn-primary", text:"保存"});
+  const err=el("div",{class:"auth-error"});
+  const saveBtn=el("button",{class:"btn btn-primary", text:"保存"});
   saveBtn.onclick=async ()=>{
     err.textContent=""; saveBtn.disabled=true;
-    const payload={
-      username: nameInput.value.trim(),
-      notifications: { emailInvites: cbInvites.checked, emailUpdates: cbUpdates.checked },
-    };
+    const payload={ username: nameInput.value.trim() };
     if(!handleSet) payload.handle = handleInput.value.trim();
     try{
       const r=await api("/account",{method:"PATCH",body:payload});
-      accountCache=r;
-      currentUserEmail=r.email;
-      setUserIdentity(r.username || r.email);
-      renderAccount(r);   // re-render (handle now locked, fields normalized)
+      accountCache=r; currentUserEmail=r.email; setUserIdentity(r.username || r.email);
+      renderAccount(r);
     }catch(e){ err.textContent=e.message; }
     finally{ saveBtn.disabled=false; }
   };
-
-  card.append(
-    el("div",{class:"share-head"},
-      el("strong",{text:"アカウント設定"}),
-      el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeAccount})),
-    renderEmails(a.emails||[]),
+  return el("div",{},
     el("div",{class:"acc-field"}, el("label",{text:"ユーザーネーム"}), nameInput),
     el("div",{class:"acc-field"},
-      el("label",{text:"ユーザーID"+(handleSet?"（変更不可）":"（設定後は変更できません）")}),
-      handleInput),
-    el("div",{class:"share-section-title", text:"通知設定"}),
+      el("label",{text:"ユーザーID"+(handleSet?"（変更不可）":"（設定後は変更できません）")}), handleInput),
+    err,
+    el("div",{class:"acc-actions"}, saveBtn));
+}
+
+// Appearance pane: theme switcher (applies instantly, no save).
+function accAppearancePane(){
+  return el("div",{}, el("div",{class:"acc-field"}, el("label",{text:"テーマ"}), renderThemeSeg()));
+}
+
+// Notification preferences pane.
+function accNotifyPane(a){
+  const notif=a.notifications||{};
+  const cbInvites=el("input",{type:"checkbox"}); cbInvites.checked = notif.emailInvites !== false;
+  const cbUpdates=el("input",{type:"checkbox"}); cbUpdates.checked = !!notif.emailUpdates;
+  const err=el("div",{class:"auth-error"});
+  const saveBtn=el("button",{class:"btn btn-primary", text:"保存"});
+  saveBtn.onclick=async ()=>{
+    err.textContent=""; saveBtn.disabled=true;
+    try{
+      const r=await api("/account",{method:"PATCH",body:{notifications:{emailInvites:cbInvites.checked, emailUpdates:cbUpdates.checked}}});
+      accountCache=r; renderAccount(r);
+    }catch(e){ err.textContent=e.message; }
+    finally{ saveBtn.disabled=false; }
+  };
+  return el("div",{},
     el("label",{class:"acc-check"}, cbInvites, el("span",{text:"ワークスペースへの招待メールを受け取る"})),
     el("label",{class:"acc-check"}, cbUpdates, el("span",{text:"お知らせ・更新のメールを受け取る"})),
     err,
-    el("div",{class:"acc-actions"}, saveBtn)
+    el("div",{class:"acc-actions"}, saveBtn));
+}
+
+// Export the current workspace's TD data (tickets + AfterCheck) as a JSON file.
+function exportTdData(){
+  const meta=curWs();
+  const payload={ app:"ayanu", type:"td-data", workspace:(meta&&meta.name)||null, exportedAt:new Date().toISOString(), data };
+  const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const safe=((meta&&meta.name)||"workspace").replace(/[^\w.-]+/g,"_");
+  const a=el("a",{href:url, download:"ayanu-td_"+safe+"_"+todayStr()+".json"});
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+// Read a previously exported JSON and overwrite the current workspace's TD data.
+function importTdData(file){
+  const reader=new FileReader();
+  reader.onload=()=>{
+    let parsed; try{ parsed=JSON.parse(reader.result); }catch(_){ alert("JSONの読み込みに失敗しました。"); return; }
+    const incoming=(parsed && parsed.data && typeof parsed.data==="object") ? parsed.data : parsed;
+    if(!incoming || typeof incoming!=="object" || (!("tickets" in incoming) && !("ac" in incoming))){
+      alert("TDデータの形式ではありません。"); return;
+    }
+    if(!confirm("現在のワークスペースのTDデータを取り込んだ内容で上書きします。よろしいですか？（元に戻せません）")) return;
+    data=normalizeData(incoming); save(); render(); closeAccount();
+    alert("インポートしました。");
+  };
+  reader.readAsText(file);
+}
+
+// Import / export pane: TD data round-trip + report output.
+function accDataPane(){
+  const meta=curWs();
+  const wsName=(meta&&meta.name)||"ワークスペース";
+  const canEdit=!!currentWsId && currentWsId!==AGG_ID && viewMode==="edit";
+  const wrap=el("div",{});
+
+  wrap.append(
+    el("div",{class:"tfa-help", text:"現在のワークスペース「"+wsName+"」のTDデータ（日報・AfterCheck）を書き出し／取り込みします。"}),
+    el("div",{class:"share-row"}, el("button",{class:"mini-btn", text:"TDデータをエクスポート（JSON）", onClick:exportTdData})));
+
+  const fileInput=el("input",{type:"file", accept:"application/json,.json"}); fileInput.style.display="none";
+  fileInput.onchange=()=>{ const f=fileInput.files[0]; if(f) importTdData(f); fileInput.value=""; };
+  wrap.append(el("div",{class:"share-row"},
+    el("button",{class:"mini-btn", text:"TDデータをインポート（JSON）", onClick:()=>{
+      if(!canEdit){ alert("インポートは編集中のワークスペースでのみ可能です。"); return; }
+      fileInput.click();
+    }}), fileInput));
+  if(!canEdit) wrap.append(el("div",{class:"share-sub", text:"※ 全体混合・メンバー状況の表示中はインポートできません。"}));
+
+  wrap.append(
+    el("div",{class:"share-section-title", text:"レポート"}),
+    el("div",{class:"tfa-help", text:"期間集計レポートを開き、画面表示・CSV出力ができます。"}),
+    el("div",{class:"share-row"}, el("button",{class:"mini-btn", text:"レポートを開く", onClick:()=>{ closeAccount(); openReport(); }})));
+  return wrap;
+}
+
+// External integrations pane (API etc.) — placeholder for now.
+function accIntegrationsPane(){
+  return el("div",{},
+    el("div",{class:"tfa-help", text:"API連携などの外部連携設定は準備中です。今後のアップデートで提供予定です。"}));
+}
+
+// Two-pane settings: left category nav + right content panel.
+function renderAccount(a){
+  const card=document.getElementById("accountCard");
+  card.innerHTML="";
+
+  const sections=[
+    {id:"profile",     label:"プロフィール",          icon:"👤", render:()=>accProfilePane(a)},
+    {id:"account",     label:"アカウント",            icon:"✉️", render:()=>renderEmails(a.emails||[])},
+    {id:"appearance",  label:"表示",                  icon:"🎨", render:()=>accAppearancePane()},
+    {id:"notify",      label:"通知",                  icon:"🔔", render:()=>accNotifyPane(a)},
+    {id:"data",        label:"インポート・エクスポート", icon:"⇅", render:()=>accDataPane()},
+    {id:"integrations",label:"外部連携",              icon:"🔗", render:()=>accIntegrationsPane()},
+    {id:"connections", label:"ログイン連携",          icon:"🔗", render:()=>renderOAuthLinks(a)},
+    {id:"security",    label:"セキュリティ",          icon:"🔒", render:()=>render2FA(a)},
+    {id:"danger",      label:"アカウント削除",        icon:"⚠️", danger:true, render:()=>renderDangerZone(a)},
+  ];
+  if(!sections.some(s=>s.id===accountSection)) accountSection="profile";
+
+  const nav=el("div",{class:"acc-nav"});
+  const content=el("div",{class:"acc-content"});
+  function selectSection(id){
+    accountSection=id;
+    nav.querySelectorAll(".acc-nav-item").forEach(n=>n.classList.toggle("active", n.dataset.id===id));
+    const sec=sections.find(s=>s.id===id);
+    content.innerHTML="";
+    content.append(el("div",{class:"acc-pane-title"+(sec.danger?" danger":""), text:sec.label}), sec.render());
+  }
+  sections.forEach(s=>{
+    nav.appendChild(el("div",{class:"acc-nav-item"+(s.danger?" danger":""), "data-id":s.id, onClick:()=>selectSection(s.id)},
+      el("span",{class:"acc-nav-ic", text:s.icon}), el("span",{text:s.label})));
+  });
+
+  card.append(
+    el("div",{class:"share-head"},
+      backChip(closeAccount),
+      el("strong",{text:"設定"}),
+      el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeAccount})),
+    el("div",{class:"acc-body"}, nav, content)
   );
+  selectSection(accountSection);
 }
 /* ---- user menu (top-right dropdown: account / logout) ---- */
 const userMenuBtn=document.getElementById("userMenuBtn");
@@ -923,20 +1316,18 @@ function fmtDate(ds){
   return (d.getMonth()+1)+"/"+d.getDate()+"（"+WD[d.getDay()]+"）";
 }
 
-/* Sidebar: recent dates (most recent first), always including today & the current view. */
+/* Sidebar: a fixed window around the selected date — 2 days before .. 4 days after (newest first). */
 function renderDayList(){
   const el=document.getElementById("dayList");
   const today=todayStr();
   const allTickets=ws().tickets;
-  const dates=new Set(Object.keys(allTickets));
-  dates.add(currentDate);
-  // always include the last 7 days (today and the previous 6), even if empty
-  for(let i=0;i<7;i++){
-    const d=new Date(today+"T00:00:00"); d.setDate(d.getDate()-i);
-    const off=d.getTimezoneOffset();
-    dates.add(new Date(d.getTime()-off*60000).toISOString().slice(0,10));
+  // window centered on the selected date: previous 2 days + next 4 days (7 days, newest first)
+  const base=new Date(currentDate+"T00:00:00");
+  const sorted=[];
+  for(let i=4;i>=-2;i--){
+    const d=new Date(base.getTime()); d.setDate(d.getDate()+i);
+    sorted.push(isoOf(d));
   }
-  const sorted=[...dates].sort().reverse().slice(0,14);   // newest first, cap at 14
 
   el.innerHTML="";
   sorted.forEach(ds=>{
@@ -975,13 +1366,15 @@ function buildTaskItem(t, depth){
   handle.title="掴んでドラッグ：上下で並び替え／右に寄せると子タスクに";
   row.appendChild(handle);
 
-  // checkbox
-  const cb = document.createElement("input");
-  cb.type="checkbox"; cb.checked=t.done;
-  cb.onchange = ()=>{ t.done=cb.checked; render(); };
-  row.appendChild(cb);
+  // 予定時間 (estimate)
+  const est = document.createElement("input");
+  est.className="est"; est.type="number"; est.min="0"; est.step="0.5";
+  est.value=t.est; est.placeholder="0"; est.title="予定時間";
+  est.oninput = ()=>{ t.est=est.value; save(); updateSummaries(); };
+  row.appendChild(est);
+  const estUnit=document.createElement("span"); estUnit.className="est-unit"; estUnit.textContent="h"; row.appendChild(estUnit);
 
-  // text (textarea: Shift+Enter = newline, Enter = next row)
+  // 入力欄 (textarea: Shift+Enter = newline, Enter = next row)
   const text = document.createElement("textarea");
   text.className="task-text"; text.rows=1; text.value=t.text; text.placeholder="タスク名…";
   text.oninput = ()=>{ t.text=text.value; autoGrow(text); save(); };
@@ -992,8 +1385,8 @@ function buildTaskItem(t, depth){
       const s=text.selectionStart, en=text.selectionEnd, len=text.value.length;
       if(e.shiftKey){ outdentTask(t); }                         // Shift+Tab: 階層上げ
       else if(s===0 && en===0){ indentTask(t); }                // 文頭(空含む) + Tab: 階層下げ
-      else if(s===en && en===len && text.value.trim()!==""){    // 文末 + Tab: 右の数字欄へ
-        est.focus(); est.select();
+      else if(s===en && en===len && text.value.trim()!==""){    // 文末 + Tab: 右の実際時間欄へ
+        actual.focus(); actual.select();
       } else {                                                  // 文中 + Tab: 空白を挿入
         insertTab(text); t.text=text.value; autoGrow(text); save();
       }
@@ -1002,13 +1395,18 @@ function buildTaskItem(t, depth){
   });
   row.appendChild(text);
 
-  // estimate
-  const est = document.createElement("input");
-  est.className="est"; est.type="number"; est.min="0"; est.step="0.5";
-  est.value=t.est; est.placeholder="0"; est.title="見積もり時間";
-  est.oninput = ()=>{ t.est=est.value; save(); updateSummaries(); };
-  row.appendChild(est);
-  const unit=document.createElement("span"); unit.className="est-unit"; unit.textContent="h"; row.appendChild(unit);
+  // 実際時間 (actual) — entering a value marks the task done (strike-through)
+  const actual = document.createElement("input");
+  actual.className="actual"; actual.type="number"; actual.min="0"; actual.step="0.5";
+  actual.value=t.actual; actual.placeholder="0"; actual.title="実際時間";
+  actual.oninput = ()=>{
+    t.actual = actual.value;
+    t.done = actual.value.trim() !== "";
+    row.classList.toggle("done", t.done);
+    save(); updateSummaries();
+  };
+  row.appendChild(actual);
+  const actUnit=document.createElement("span"); actUnit.className="est-unit"; actUnit.textContent="h"; row.appendChild(actUnit);
 
   // priority (two levels: 優 / 準, default 優)
   if(t.prio!=="top" && t.prio!=="semi") t.prio="top";   // normalize legacy/empty values
@@ -1355,7 +1753,7 @@ async function afterLogin(){
 
     if(currentWsId===last && earlyData!=null) data=normalizeData(earlyData);  // reuse the parallel fetch
     else await loadWorkspaceData();
-    setView("edit"); updateModeButtons();
+    setView("edit");
     currentDate=todayStr(); calYM=currentDate.slice(0,7);
     renderClean();
     setSyncStatus("saved");
@@ -1377,9 +1775,12 @@ function estOf(t){ const n=parseFloat(t.est); return isNaN(n)?0:n; }
 function pct(n,d){ return d ? Math.round(n/d*100)+"%" : "—"; }
 function fmtH(h){ return String(Math.round(h*10)/10); }
 
-/* Aggregate the current workspace's tickets within [from,to] (inclusive ISO dates). */
-function computeReport(from, to){
-  const tickets = ws().tickets || {};
+/* Aggregate a workspace's tickets within [from,to] (inclusive ISO dates).
+   `content` defaults to the current user's data; pass a member's {tickets,ac}
+   to build the same report for any member in the overview. */
+function computeReport(from, to, content){
+  const c = content || data;
+  const tickets = (c && c.tickets) || {};
   const days = Object.keys(tickets).filter(d=> d>=from && d<=to).sort();
   const rows = days.map(d=>{
     const tasks = flattenTasks(tickets[d].tasks);
@@ -1398,8 +1799,8 @@ function computeReport(from, to){
     total:a.total+r.total, done:a.done+r.done, est:a.est+r.est,
     estDone:a.estDone+r.estDone, top:a.top+r.top, semi:a.semi+r.semi,
   }), {total:0,done:0,est:0,estDone:0,top:0,semi:0});
-  const ac = acList();
-  return {rows, sum, days:rows.length, ac:{total:ac.length, done:ac.filter(a=>a.done).length}};
+  const ac = Array.isArray(c && c.ac) ? c.ac : [];
+  return {rows, sum, days:rows.length, ac:{total:ac.length, done:ac.filter(a=>a&&a.done).length}};
 }
 
 function defaultReportRange(){ const to=todayStr(); return {from: to.slice(0,8)+"01", to}; }
@@ -1417,6 +1818,44 @@ function statCard(label, val){
   return el("div",{class:"report-stat"}, el("div",{class:"rs-val", text:val}), el("div",{class:"rs-lbl", text:label}));
 }
 
+/* Summary stat cards + per-day table for a computed report. Shared by the
+   report modal (current user) and the overview's per-member report tab. */
+function appendReportBody(container, rep){
+  const s = rep.sum;
+  container.appendChild(el("div",{class:"report-cards"},
+    statCard("タスク", s.total+"件"),
+    statCard("完了", s.done+"件"),
+    statCard("完了率", pct(s.done, s.total)),
+    statCard("見積合計", fmtH(s.est)+"h"),
+    statCard("完了分", fmtH(s.estDone)+"h"),
+    statCard("対象日数", rep.days+"日")
+  ));
+  container.appendChild(el("div",{class:"share-sub",
+    text:"AfterCheck（現在）: "+rep.ac.done+"/"+rep.ac.total+"（"+pct(rep.ac.done, rep.ac.total)+"）"}));
+
+  if(rep.rows.length){
+    const tbl = el("table",{class:"report-table"});
+    tbl.appendChild(el("thead",{}, el("tr",{},
+      ...["日付","タスク","完了","完了率","優","準","見積h","完了h"].map(h=>el("th",{text:h}))
+    )));
+    const tb = el("tbody");
+    rep.rows.forEach(r=> tb.appendChild(el("tr",{},
+      el("td",{text:r.date}), el("td",{text:String(r.total)}), el("td",{text:String(r.done)}),
+      el("td",{text:pct(r.done,r.total)}), el("td",{text:String(r.top)}), el("td",{text:String(r.semi)}),
+      el("td",{text:fmtH(r.est)}), el("td",{text:fmtH(r.estDone)})
+    )));
+    tb.appendChild(el("tr",{class:"report-total"},
+      el("td",{text:"合計"}), el("td",{text:String(s.total)}), el("td",{text:String(s.done)}),
+      el("td",{text:pct(s.done,s.total)}), el("td",{text:String(s.top)}), el("td",{text:String(s.semi)}),
+      el("td",{text:fmtH(s.est)}), el("td",{text:fmtH(s.estDone)})
+    ));
+    tbl.appendChild(tb);
+    container.appendChild(tbl);
+  } else {
+    container.appendChild(el("div",{class:"report-empty", text:"この期間に入力のある日付はありません。"}));
+  }
+}
+
 function renderReport(){
   const card = document.getElementById("reportCard");
   card.innerHTML="";
@@ -1425,6 +1864,7 @@ function renderReport(){
   const wsName = (curWs() && curWs().name) || "ワークスペース";
 
   card.appendChild(el("div",{class:"share-head"},
+    backChip(closeReport),
     el("strong",{text:"📊 レポート"}),
     el("button",{class:"icon-btn", text:"✕", title:"閉じる", onClick:closeReport})
   ));
@@ -1443,41 +1883,8 @@ function renderReport(){
     el("button",{class:"mini-btn", text:"全期間", onClick:()=>{ reportRange=allRange(); renderReport(); }})
   ));
 
-  // summary stats
-  const s = rep.sum;
-  card.appendChild(el("div",{class:"report-cards"},
-    statCard("タスク", s.total+"件"),
-    statCard("完了", s.done+"件"),
-    statCard("完了率", pct(s.done, s.total)),
-    statCard("見積合計", fmtH(s.est)+"h"),
-    statCard("完了分", fmtH(s.estDone)+"h"),
-    statCard("対象日数", rep.days+"日")
-  ));
-  card.appendChild(el("div",{class:"share-sub",
-    text:"AfterCheck（現在）: "+rep.ac.done+"/"+rep.ac.total+"（"+pct(rep.ac.done, rep.ac.total)+"）"}));
-
-  // per-day table
-  if(rep.rows.length){
-    const tbl = el("table",{class:"report-table"});
-    tbl.appendChild(el("thead",{}, el("tr",{},
-      ...["日付","タスク","完了","完了率","優","準","見積h","完了h"].map(h=>el("th",{text:h}))
-    )));
-    const tb = el("tbody");
-    rep.rows.forEach(r=> tb.appendChild(el("tr",{},
-      el("td",{text:r.date}), el("td",{text:String(r.total)}), el("td",{text:String(r.done)}),
-      el("td",{text:pct(r.done,r.total)}), el("td",{text:String(r.top)}), el("td",{text:String(r.semi)}),
-      el("td",{text:fmtH(r.est)}), el("td",{text:fmtH(r.estDone)})
-    )));
-    tb.appendChild(el("tr",{class:"report-total"},
-      el("td",{text:"合計"}), el("td",{text:String(s.total)}), el("td",{text:String(s.done)}),
-      el("td",{text:pct(s.done,s.total)}), el("td",{text:String(s.top)}), el("td",{text:String(s.semi)}),
-      el("td",{text:fmtH(s.est)}), el("td",{text:fmtH(s.estDone)})
-    ));
-    tbl.appendChild(tb);
-    card.appendChild(tbl);
-  } else {
-    card.appendChild(el("div",{class:"report-empty", text:"この期間に入力のある日付はありません。"}));
-  }
+  // summary stats + per-day table
+  appendReportBody(card, rep);
 
   card.appendChild(el("div",{class:"report-actions"},
     el("button",{class:"mini-btn primary", text:"CSV出力", onClick:()=>exportReportCsv(rep, wsName)}),
@@ -1505,7 +1912,7 @@ document.getElementById("reportBtn").onclick=openReport;
 /* close the share / report modals on overlay click / Esc */
 document.getElementById("shareOverlay").onclick=(e)=>{ if(e.target.id==="shareOverlay") closeShare(); };
 document.getElementById("reportOverlay").onclick=(e)=>{ if(e.target.id==="reportOverlay") closeReport(); };
-document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeShare(); closeReport(); } });
+document.addEventListener("keydown",e=>{ if(e.key==="Escape"){ closeShare(); closeReport(); closeAccount(); closeWsCreate(); } });
 
 /* ---------------- Go ---------------- */
 /* ---------------- Social login ---------------- */
@@ -1529,6 +1936,24 @@ async function renderSocialButtons(){
   divider.style.display = any ? "" : "none";
 }
 
+/* After linking from settings the provider redirects to ?account=1&link=...;
+   reopen the account modal and report the result. */
+async function handleOAuthLinkReturn(){
+  const p=new URLSearchParams(location.search);
+  if(p.get("account")!=="1") return;
+  const link=p.get("link"), lerr=p.get("link_error");
+  history.replaceState({}, "", location.pathname);
+  await openAccount();
+  if(link==="ok"){ setTimeout(()=>alert("連携しました。"),100); }
+  else if(lerr){
+    const msg = lerr==="taken" ? "この連携アカウントは既に別のユーザーに紐づいています。"
+              : lerr==="auth"  ? "ログインが必要です。"
+              : lerr==="state" ? "セッションが無効です。もう一度お試しください。"
+              : "連携に失敗しました。";
+    setTimeout(()=>alert(msg),100);
+  }
+}
+
 /* Surface an OAuth callback error (?oauth_error=...) on the login screen. */
 function showOAuthError(){
   const oerr=new URLSearchParams(location.search).get("oauth_error");
@@ -1548,6 +1973,7 @@ async function init(){
     const me=await api("/auth/me");      // existing session?
     currentUserEmail=me.email;
     await afterLogin();                  // renders, then reveals + hides splash
+    await handleOAuthLinkReturn();       // re-open account after a link round-trip
   }catch(_){
     setAuthMode("login");
     showApp(false); showAuth(true);

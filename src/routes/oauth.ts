@@ -7,7 +7,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { sql } from '../lib/db.js';
-import { makeToken } from '../lib/auth.js';
+import { makeToken, readToken } from '../lib/auth.js';
 import { setAuthCookie } from '../middleware/auth.js';
 import { baseUrl, ownerOfEmail } from '../utils.js';
 import type { AppEnv } from '../types.js';
@@ -87,9 +87,28 @@ const PROVIDERS: Record<string, Provider> = {
   },
 };
 
-function isConfigured(p: string): boolean {
+export const OAUTH_PROVIDERS = Object.keys(PROVIDERS);
+
+export function isConfigured(p: string): boolean {
   const cfg = PROVIDERS[p];
   return !!(cfg && cfg.clientId && cfg.clientSecret);
+}
+
+// Attach a provider identity to an ALREADY signed-in user (linking from settings).
+// Throws 'taken' if the identity already belongs to a different account.
+export async function linkIdentity(userId: string, provider: string, p: Profile): Promise<void> {
+  const existing = await sql`select user_id from oauth_accounts where provider = ${provider} and provider_user_id = ${p.providerUserId}`;
+  if (existing.length) {
+    if (existing[0].user_id === userId) return;   // already linked to me — no-op
+    throw new Error('taken');
+  }
+  await sql`insert into oauth_accounts (provider, provider_user_id, user_id) values (${provider}, ${p.providerUserId}, ${userId})`;
+  // record the provider-verified email on this account if it isn't owned yet
+  const email = (p.email || '').toLowerCase().trim();
+  if (email && !(await ownerOfEmail(email))) {
+    await sql`insert into user_emails (user_id, email, verified) values (${userId}, ${email}, true)
+      on conflict (user_id, email) do update set verified = true`;
+  }
 }
 
 function callbackUri(c: any, provider: string): string {
@@ -146,6 +165,12 @@ router.get('/auth/oauth/:provider', (c) => {
 
   const state = crypto.randomUUID();
   setCookie(c, 'oauth_state', state, { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
+  // `?mode=link` attaches the identity to the signed-in user instead of logging in.
+  if (c.req.query('mode') === 'link') {
+    setCookie(c, 'oauth_mode', 'link', { httpOnly: true, secure: true, sameSite: 'Lax', path: '/', maxAge: 600 });
+  } else {
+    deleteCookie(c, 'oauth_mode', { path: '/' });
+  }
   const params = new URLSearchParams({
     client_id: cfg.clientId!,
     redirect_uri: callbackUri(c, provider),
@@ -166,8 +191,27 @@ router.get('/auth/oauth/:provider/callback', async (c) => {
   const code = c.req.query('code');
   const state = c.req.query('state');
   const saved = getCookie(c, 'oauth_state');
+  const mode = getCookie(c, 'oauth_mode');
   deleteCookie(c, 'oauth_state', { path: '/' });
-  if (!code || !state || state !== saved) return c.redirect('/?oauth_error=state');
+  deleteCookie(c, 'oauth_mode', { path: '/' });
+  if (!code || !state || state !== saved) {
+    return c.redirect(mode === 'link' ? '/?account=1&link_error=state' : '/?oauth_error=state');
+  }
+
+  // Linking flow: attach the identity to the signed-in user, back to the account screen.
+  if (mode === 'link') {
+    const payload = await readToken(getCookie(c, 'token') || '');
+    if (!payload) return c.redirect('/?account=1&link_error=auth');
+    try {
+      const profile = await cfg.exchange(cfg, code, callbackUri(c, provider));
+      await linkIdentity(payload.sub as string, provider, profile);
+      return c.redirect('/?account=1&link=ok');
+    } catch (e) {
+      const msg = (e as Error).message === 'taken' ? 'taken' : 'failed';
+      console.error('[ayanu] oauth link error', e);
+      return c.redirect('/?account=1&link_error=' + msg);
+    }
+  }
 
   try {
     const profile = await cfg.exchange(cfg, code, callbackUri(c, provider));

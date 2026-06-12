@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>綾整(Ayanu)</title>
 <link rel="stylesheet" href="styles.css">
+<script>
+  // Apply the saved theme before paint to avoid a flash of the wrong theme.
+  try{ var _t=localStorage.getItem("ayanu_theme"); if(_t==="dark") document.documentElement.setAttribute("data-theme","dark"); }catch(_){}
+</script>
 </head>
 <body>
 <!-- Boot splash: covers everything until auth is resolved and the first data is rendered -->
@@ -52,7 +56,21 @@
     </nav>
     <div class="sidebar-actions">
       <button class="ws-add" id="addWs">＋ 新規ワークスペース</button>
-      <button class="ws-add" id="shareWsBtn">⚙ 共有・メンバー設定</button>
+    </div>
+    <!-- Account lives at the bottom-left -->
+    <div class="sidebar-footer">
+      <div class="user-area" id="userArea" style="display:none">
+        <button class="user-menu-btn" id="userMenuBtn" title="アカウント">
+          <span class="user-avatar" id="userAvatar">U</span>
+          <span class="user-email" id="userEmail"></span>
+          <span class="ws-caret">▾</span>
+        </button>
+        <div class="user-dropdown" id="userDropdown">
+          <button class="kebab-item" id="accountBtn"><span class="kebab-ic">⚙</span><span>アカウント設定</span></button>
+          <div class="kebab-sep"></div>
+          <button class="kebab-item" id="logoutBtn"><span class="kebab-ic">⎋</span><span>ログアウト</span></button>
+        </div>
+      </div>
     </div>
   </aside>
   <div class="sidebar-overlay" id="sidebarOverlay"></div>
@@ -66,18 +84,6 @@
       <div class="topbar-title" id="wsCurrent">…</div>
       <div class="topbar-spacer"></div>
       <span class="sync-status" id="syncStatus"></span>
-      <div class="user-area" id="userArea" style="display:none">
-        <button class="user-menu-btn" id="userMenuBtn" title="アカウント">
-          <span class="user-avatar" id="userAvatar">U</span>
-          <span class="user-email" id="userEmail"></span>
-          <span class="ws-caret">▾</span>
-        </button>
-        <div class="user-dropdown" id="userDropdown">
-          <button class="kebab-item" id="accountBtn"><span class="kebab-ic">⚙</span><span>アカウント設定</span></button>
-          <div class="kebab-sep"></div>
-          <button class="kebab-item" id="logoutBtn"><span class="kebab-ic">⎋</span><span>ログアウト</span></button>
-        </div>
-      </div>
     </header>
 
     <!-- Page sub-header: date navigation + page-level actions -->
@@ -88,7 +94,6 @@
         <button id="todayBtn" class="btn">今日</button>
       </div>
       <div class="page-actions">
-        <button id="overviewBtn" class="btn" title="メンバーのTD状況" style="display:none">👥 メンバー状況</button>
         <button id="reportBtn" class="btn" title="レポートを表示">📊 レポート</button>
       </div>
     </div>
@@ -149,6 +154,11 @@
   </div>
 </div>
 
+<!-- New workspace modal -->
+<div class="share-overlay" id="wsCreateOverlay">
+  <div class="share-card" id="wsCreateCard"></div>
+</div>
+
 <!-- Account settings modal -->
 <div class="share-overlay" id="accountOverlay">
   <div class="share-card" id="accountCard"></div>
@@ -164,6 +174,7 @@
   <div class="share-card report-card" id="reportCard"></div>
 </div>
 
+<script src="vendor/qrcode.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -16,6 +16,9 @@ alter table users add column if not exists username text;
 alter table users add column if not exists handle text unique;
 alter table users add column if not exists notifications jsonb not null default '{}'::jsonb;
 alter table users alter column password_hash drop not null;
+-- TOTP two-factor: secret is held from setup; enabled flips true once a code is verified.
+alter table users add column if not exists totp_secret text;
+alter table users add column if not exists totp_enabled boolean not null default false;
 
 -- Email addresses owned by a user (GitHub-style: one account, many emails).
 -- users.email mirrors the current primary. Invite-accepted and OAuth emails are

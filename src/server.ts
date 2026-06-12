@@ -1,5 +1,5 @@
 // Local dev server: serves public/index.html + the Hono API on one origin.
-// Usage: DATABASE_URL=... JWT_SECRET=... npm run dev   (then open http://localhost:3000)
+// Usage: DATABASE_URL=... JWT_SECRET=... npm run dev   (then open http://localhost:4317)
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
@@ -10,7 +10,7 @@ root.route('/', api);                                         // /api/* handled 
 root.get('/', serveStatic({ path: './public/index.html' }));  // app shell
 root.get('/*', serveStatic({ root: './public' }));            // any other static asset
 
-const port = Number(process.env.PORT) || 3000;
+const port = Number(process.env.PORT) || 4317;
 serve({ fetch: root.fetch, port }, () => {
   console.log(`綾整(Ayanu) running at http://localhost:${port}`);
 });
